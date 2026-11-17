@@ -1,0 +1,40 @@
+# Subproyecto Web (repositorio independiente en Vercel/GitHub)
+/Panel Web/
+
+# Credenciales y secretos locales
+/taxi-ya-78dd0-firebase-adminsdk-*.json
+/Mapbox tokens.txt
+/env.local.json
+**/android/gradle.properties
+*.env
+.env.*
+*.keystore
+*.jks
+key.properties
+
+# Dart / Flutter
+**/.dart_tool/
+**/.flutter-plugins-dependencies
+**/.pub-cache/
+**/.pub/
+**/build/
+**/coverage/
+**/doc/api/
+/taxiya_core/pubspec.lock
+
+# Android / iOS / IDE
+*.class
+*.log
+*.iml
+*.ipr
+*.iws
+.idea/
+.DS_Store
+**/android/app/debug/
+**/android/app/profile/
+**/android/app/release/
+**/android/.gradle/
+**/ios/Flutter/.last_build_id
+**/ios/Pods/
+**/ios/.symlinks/
+**/macos/Pods/

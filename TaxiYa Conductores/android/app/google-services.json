@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "32106358982",
+    "project_id": "taxi-ya-78dd0",
+    "storage_bucket": "taxi-ya-78dd0.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:32106358982:android:589f95e91759efb078cfc7",
+        "android_client_info": {
+          "package_name": "ar.com.taxiya.conductores"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyByvEfZgO2C7Q-A7y1KCTAbkNYKrr-1fcY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:32106358982:android:60ea10d61d0780b978cfc7",
+        "android_client_info": {
+          "package_name": "ar.com.taxiya.pasajeros"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyByvEfZgO2C7Q-A7y1KCTAbkNYKrr-1fcY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

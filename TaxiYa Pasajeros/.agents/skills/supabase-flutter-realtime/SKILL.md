@@ -1,0 +1,251 @@
+---
+name: supabase-flutter-realtime
+description: >-
+  Builds realtime features with supabase_flutter v3: live lists of table rows with
+  typed stream(), reacting to inserts, updates and deletes with
+  onTableChanges, broadcast messages between clients, presence, and channel
+  status and cleanup. Use when the user wants live updates, a chat, cursors,
+  an online indicator or notifications of database changes.
+---
+
+# Realtime with supabase_flutter
+
+## Choose the API
+
+| Need                                                    | Use                                              |
+| ------------------------------------------------------- | ------------------------------------------------ |
+| The current rows of a table, kept up to date            | `table(X.table).stream(primaryKey: [...])`       |
+| Only some columns of those rows                         | `table(X.table).streamOnly(...)`                 |
+| Every insert, update or delete as an event              | `channel.onTableChanges(X.table)`                |
+| Messages between clients that are not stored in a table | `channel.onBroadcast` and `sendBroadcastMessage` |
+| Who is online                                           | `channel.track` and `onPresenceSync`             |
+
+## Rules
+
+- Every listener is a `Stream`. There are no `callback:` parameters.
+- Create every `onTableChanges`, `onBroadcast` and presence stream before
+  `channel.subscribe()`. A postgres changes listener added after it throws a
+  `StateError`.
+- Cancel the subscriptions and call `supabase.removeChannel(channel)` when the
+  feature is closed. A forgotten channel keeps receiving messages.
+- `supabase.channel(name)` returns the channel already open under that name,
+  and throws a `StateError` if it was created with other options. Remove the
+  channel before reusing its name with other options, for example when
+  another user signs in.
+- Use the typed table definitions from the generated schema, not table names
+  as strings.
+- Database changes only arrive for tables in the `supabase_realtime`
+  publication, and only for rows the user may select under row level security.
+- Create streams once, in `initState` or a field of `State`, never in
+  `build()`, or every rebuild opens a new subscription.
+
+## A live list of rows
+
+`stream()` fetches the matching rows, then applies every change, and emits
+the whole list each time:
+
+```dart
+final Stream<List<BooksRow>> books = supabase
+    .table(Books.table)
+    .stream(primaryKey: [Books.id])
+    .filter(Books.authorId.eq(2))
+    .order(Books.createdAt.desc())
+    .limit(50);
+```
+
+`filter()` takes one operator: `eq`, `neq`, `lt`, `lte`, `gt`, `gte`,
+`inFilter`, `like`, `ilike`, `matchRegex`, `imatchRegex`, `isNull`,
+`isTrue`, `isFalse` or `isDistinct`, optionally negated with `not()`. A filter
+composed with `&` or `|` throws an `ArgumentError`.
+
+`order()` takes the same orderings as a query, `Books.title` or
+`Books.createdAt.desc()`. A stream keeps `NULL`s last ascending and first
+descending, so `.nullsFirst()`, `.nullsLast()`, or an ordering by anything but
+a stored column, such as a computed field, throws an `ArgumentError`.
+
+To receive only some columns:
+
+```dart
+final titles = supabase
+    .table(Books.table)
+    .streamOnly(primaryKey: [Books.id], columns: [Books.title])
+    .map((rows) => [for (final row in rows) row.title]);
+```
+
+```dart file
+import 'package:flutter/widgets.dart';
+import 'package:my_app/supabase_schema.g.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+class BookList extends StatefulWidget {
+  const BookList({super.key});
+
+  @override
+  State<BookList> createState() => _BookListState();
+}
+
+class _BookListState extends State<BookList> {
+  final _books = Supabase.instance.client
+      .table(Books.table)
+      .stream(primaryKey: [Books.id]);
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<BooksRow>>(
+      stream: _books,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) return Text('${snapshot.error}');
+        final books = snapshot.data ?? const [];
+        return Column(children: [for (final book in books) Text(book.title)]);
+      },
+    );
+  }
+}
+```
+
+## Reacting to changes
+
+```dart
+final channel = supabase.channel('books-by-author-2');
+final subscription = channel
+    .onTableChanges(
+      Books.table,
+      event: PostgresChangeEvent.insert,
+      filters: [Books.authorId.eq(2)],
+    )
+    .listen((change) {
+      if (change case TypedPostgresInsert(:final newRow)) {
+        print('New book: ${newRow.title}');
+      }
+    });
+channel.subscribe();
+```
+
+Without `event`, the stream carries `TypedPostgresInsert`,
+`TypedPostgresUpdate` and `TypedPostgresDelete`, so switch over all three.
+The old row of an update or delete only carries the primary key, unless the
+table has `replica identity full`. `onTableChangesOnly(…, columns: [...])`
+asks the server for fewer columns.
+
+Its new rows are `PostgrestPartialRow`s like those of a `selectOnly`, so one
+list of columns and one mapping serve both. Put the primary key in the list,
+since `onTableChangesOnly` always adds it and a mapping that reads it would
+otherwise fail on the query rows. Give the list its type, since a list
+literal of nullable and non-nullable columns infers neither:
+
+```dart
+const List<PostgrestStoredColumn<BooksRow, Object>> bookTitle = [
+  Books.id,
+  Books.title,
+];
+String label(PostgrestPartialRow<BooksRow> book) =>
+    '#${book.id} ${book.title}';
+
+final books = await supabase.table(Books.table).selectOnly(bookTitle);
+print(books.map(label));
+
+final channel = supabase.channel('book-titles');
+channel.onTableChangesOnly(Books.table, columns: bookTitle).listen((change) {
+  if (change case TypedPostgresInsert(:final newRow)) print(label(newRow));
+});
+channel.subscribe();
+```
+
+A row from any other source is read the same way after
+`PostgrestPartialRow.fromJson(json, bookTitle)`.
+
+## Broadcast
+
+```dart
+final channel = supabase.channel('room-1');
+channel.onBroadcast(event: 'cursor').listen((message) {
+  if (message.payload case JsonBroadcastPayload(value: {'x': final num x})) {
+    print('Cursor at $x');
+  }
+});
+channel.subscribe();
+
+await channel.sendBroadcastMessage(event: 'cursor', payload: {'x': 30});
+```
+
+Every `onBroadcast` message is a `BroadcastMessage` with the `event` and the
+sent data as its `payload`, whether it came from `sendBroadcastMessage`,
+`httpSend`, the database or another Supabase client. The payload is a sealed
+`BroadcastPayload`: a `JsonBroadcastPayload` with the decoded JSON `value`, or
+a `BinaryBroadcastPayload` with the `bytes`. Send a `Uint8List` with
+`sendBinaryBroadcastMessage` or `httpSendBinary`. Apps on v2 put the data at
+the top level instead. A v3 listener reads it as the payload, but a v2 listener
+cannot read a v3 broadcast unless the channel is created with
+`RealtimeChannelConfig(v2BroadcastCompatibility: true)`, which sends the data
+in both places until the v2 apps are gone.
+
+Pass `RealtimeChannelConfig(self: true)` as `options` to `supabase.channel`
+to receive your own broadcasts, and `private: true` for a channel guarded by
+realtime authorization policies. Channels are public by default.
+
+## Presence
+
+```dart
+final channel = supabase.channel('room-1');
+channel.onPresenceSync.listen((_) {
+  print('Online: ${channel.presenceState().length}');
+});
+channel.onStatusChange.listen((change) async {
+  if (change.status == RealtimeSubscribeStatus.subscribed) {
+    await channel.track({'user_id': 'user-1'});
+  }
+});
+channel.subscribe();
+```
+
+Track only after the channel is subscribed, as above. `untrack()` removes the
+current client's state.
+
+## Status, errors and cleanup
+
+`onStatusChange` reports the subscription status. A failure, such as a join
+the server declined, is a `channelError` status that carries the
+`RealtimeException` as `change.error`, not an error of the stream:
+
+```dart
+final channel = supabase.channel('room-1');
+channel.onStatusChange.listen((change) {
+  switch (change.status) {
+    case RealtimeSubscribeStatus.channelError:
+      print('Channel failed: ${change.error}');
+    case RealtimeSubscribeStatus.timedOut:
+      print('Channel timed out');
+    case _:
+      print('Channel is ${change.status.name}');
+  }
+});
+channel.subscribe();
+
+await supabase.removeChannel(channel);
+```
+
+`supabase.removeAllChannels()` closes every channel. The client removes every
+channel itself when the user is signed out, so subscribe the channels again
+after the next sign-in.
+A typed `stream()` reports its failures, including a `RealtimeException`, as
+errors of the stream itself, and keeps running: a failed fetch is retried, and
+a dropped connection is not reported, since the rows are fetched again once the
+channel rejoins. A client error that a retry cannot fix, such as a missing
+table, closes the stream.
+
+## The app lifecycle
+
+`Supabase` disconnects the realtime socket when the app is paused and
+reconnects, rejoining every channel, when it resumes. Keep the socket open
+through short pauses, such as a full-screen ad on iOS, with
+`RealtimeLifecycleOptions`:
+
+```dart
+await Supabase.initialize(
+  url: 'https://your-project.supabase.co',
+  publishableKey: 'your-publishable-key',
+  realtimeLifecycleOptions: const RealtimeLifecycleOptions(
+    disconnectAfterPause: Duration(minutes: 1),
+  ),
+);
+```
