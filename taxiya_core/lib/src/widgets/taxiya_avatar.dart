@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../constants/avatars_catalog.dart';
 
-/// Avatar reutilizable: renderiza avatar predefinido (`preset://avatar_XX`),
-/// imagen remota HTTP(S) o iniciales del usuario en caso de falta de red.
+/// Avatar reutilizable: renderiza avatar oficial del paquete (`packages/taxiya_core/assets/avatars/...`)
+/// con ícono de respaldo si aún no existe el PNG, imagen remota HTTP(S) o iniciales.
 class TaxiyaAvatar extends StatelessWidget {
   const TaxiyaAvatar({
     super.key,
@@ -20,19 +20,12 @@ class TaxiyaAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final preset = TaxiyaAvatars.fromUri(avatarUrl);
     if (preset != null) {
-      return CircleAvatar(
-        radius: radius,
-        backgroundColor: preset.backgroundColor,
-        child: Icon(
-          preset.icon,
-          color: preset.foregroundColor,
-          size: radius * 1.05,
-        ),
-      );
+      return TaxiyaPresetAvatarBadge(preset: preset, radius: radius);
     }
 
     final url = avatarUrl?.trim();
-    if (url != null && (url.startsWith('http://') || url.startsWith('https://'))) {
+    if (url != null &&
+        (url.startsWith('http://') || url.startsWith('https://'))) {
       return CircleAvatar(
         radius: radius,
         backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -52,6 +45,40 @@ class TaxiyaAvatar extends StatelessWidget {
     }
 
     return _InitialsBadge(fullName: fullName, radius: radius);
+  }
+}
+
+/// Renderiza un [TaxiyaPresetAvatar] desde `packages/taxiya_core/assets/avatars/<archivo>`
+/// con fallback limpio al ícono vectorial si el PNG todavía no fue copiado.
+class TaxiyaPresetAvatarBadge extends StatelessWidget {
+  const TaxiyaPresetAvatarBadge({
+    super.key,
+    required this.preset,
+    this.radius = 22,
+  });
+
+  final TaxiyaPresetAvatar preset;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: preset.backgroundColor,
+      child: ClipOval(
+        child: Image.asset(
+          preset.assetPath,
+          width: radius * 2,
+          height: radius * 2,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) => Icon(
+            preset.icon,
+            color: preset.foregroundColor,
+            size: radius * 1.05,
+          ),
+        ),
+      ),
+    );
   }
 }
 

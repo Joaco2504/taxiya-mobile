@@ -1,5 +1,5 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:taxiya_core/taxiya_core.dart';
@@ -36,11 +36,12 @@ class _DriverOnboardingScreenState
   String? _localityId;
   String? _selectedCompanyId; // null = Taxista independiente
 
-  // Paso 2: Vehículo y vencimiento
+  // Paso 2: Titular y vehículo
   String _selectedBrand = ArgentinaVehicles.modelsByBrand.keys.first;
   String _selectedModel = ArgentinaVehicles.modelsByBrand.values.first.first;
   String _selectedColor = ArgentinaVehicles.commonColors.first;
   String _selectedType = ArgentinaVehicles.vehicleTypes.first;
+  final _dniCtrl = TextEditingController();
   final _customBrandCtrl = TextEditingController();
   final _customModelCtrl = TextEditingController();
   final _customColorCtrl = TextEditingController();
@@ -63,6 +64,7 @@ class _DriverOnboardingScreenState
     _selectedCompanyId = d?.companyId;
 
     if (d != null) {
+      _dniCtrl.text = d.dni ?? '';
       _plateCtrl.text = d.plateNumber ?? '';
       _permitExpiryDate = d.permitExpiryDate;
       if (d.carBrand != null &&
@@ -93,15 +95,20 @@ class _DriverOnboardingScreenState
       if (d.carType != null &&
           ArgentinaVehicles.vehicleTypes.contains(d.carType)) {
         _selectedType = d.carType!;
+      } else if (d.carType?.toLowerCase() == 'sedan') {
+        _selectedType = ArgentinaVehicles.vehicleTypes.first;
       }
     }
 
     _mobileUnitCtrl.text =
-        ref.read(hiveCacheProvider).driverMobileUnit ?? '';
+        widget.existingDetails?.municipalMobileNum ??
+        ref.read(hiveCacheProvider).driverMobileUnit ??
+        '';
   }
 
   @override
   void dispose() {
+    _dniCtrl.dispose();
     _customBrandCtrl.dispose();
     _customModelCtrl.dispose();
     _customColorCtrl.dispose();
@@ -278,9 +285,14 @@ class _DriverOnboardingScreenState
           .split('T')
           .first;
 
+      final cleanDni = _dniCtrl.text.replaceAll(RegExp(r'[^0-9]'), '');
+      final cleanMobileNum = _mobileUnitCtrl.text.trim();
+
       await repo.upsertDriverDetails(<String, dynamic>{
         'user_id': uid,
         'company_id': companyId,
+        'dni': cleanDni,
+        'municipal_mobile_num': cleanMobileNum.isEmpty ? null : cleanMobileNum,
         'car_brand': resolvedBrand,
         'car_model': resolvedModel,
         'car_color': resolvedColor,
@@ -480,17 +492,17 @@ class _DriverOnboardingScreenState
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (localities.isNotEmpty)
-          DropdownButtonFormField<String>(
-            initialValue: _localityId ?? localities.first.id,
-            decoration: const InputDecoration(
-              labelText: 'Localidad',
-              prefixIcon: Icon(Icons.location_city_rounded),
-            ),
-            items: localities
+          TaxiyaSelectorField<String>(
+            label: 'Localidad',
+            sheetTitle: 'Elegí tu localidad',
+            prefixIcon: Icons.location_city_rounded,
+            value: _localityId ?? localities.first.id,
+            options: localities
                 .map(
-                  (Locality l) => DropdownMenuItem<String>(
+                  (Locality l) => TaxiyaSelectorOption<String>(
                     value: l.id,
-                    child: Text(l.name),
+                    label: l.name,
+                    subtitle: l.province,
                   ),
                 )
                 .toList(),
@@ -591,13 +603,36 @@ class _DriverOnboardingScreenState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          DropdownButtonFormField<String>(
-            initialValue: _selectedBrand,
-            decoration: const InputDecoration(labelText: 'Marca del vehículo'),
-            items: brands
+          TextFormField(
+            controller: _dniCtrl,
+            keyboardType: TextInputType.number,
+            inputFormatters: <TextInputFormatter>[
+              FilteringTextInputFormatter.digitsOnly,
+            ],
+            decoration: const InputDecoration(
+              labelText: 'DNI del titular',
+              hintText: 'Ej: 30123456',
+              helperText: 'Ingresalo sin puntos ni espacios.',
+              prefixIcon: Icon(Icons.badge_outlined),
+            ),
+            validator: (String? v) {
+              final digits = (v ?? '').replaceAll(RegExp(r'[^0-9]'), '');
+              if (digits.length < 7 || digits.length > 9) {
+                return 'Ingresá un DNI válido (7 a 9 dígitos sin puntos).';
+              }
+              return null;
+            },
+          ),
+          const SizedBox(height: 12),
+          TaxiyaSelectorField<String>(
+            label: 'Marca del vehículo',
+            sheetTitle: 'Elegí la marca del vehículo',
+            prefixIcon: Icons.directions_car_rounded,
+            value: _selectedBrand,
+            options: brands
                 .map(
                   (String b) =>
-                      DropdownMenuItem<String>(value: b, child: Text(b)),
+                      TaxiyaSelectorOption<String>(value: b, label: b),
                 )
                 .toList(),
             onChanged: (String? val) {
@@ -626,15 +661,17 @@ class _DriverOnboardingScreenState
             ),
           ],
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
-            initialValue: models.contains(_selectedModel)
+          TaxiyaSelectorField<String>(
+            label: 'Modelo',
+            sheetTitle: 'Elegí el modelo',
+            prefixIcon: Icons.local_taxi_rounded,
+            value: models.contains(_selectedModel)
                 ? _selectedModel
                 : models.first,
-            decoration: const InputDecoration(labelText: 'Modelo'),
-            items: models
+            options: models
                 .map(
                   (String m) =>
-                      DropdownMenuItem<String>(value: m, child: Text(m)),
+                      TaxiyaSelectorOption<String>(value: m, label: m),
                 )
                 .toList(),
             onChanged: (String? val) {
@@ -656,13 +693,15 @@ class _DriverOnboardingScreenState
             ),
           ],
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
-            initialValue: _selectedColor,
-            decoration: const InputDecoration(labelText: 'Color'),
-            items: ArgentinaVehicles.commonColors
+          TaxiyaSelectorField<String>(
+            label: 'Color',
+            sheetTitle: 'Elegí el color del auto',
+            prefixIcon: Icons.palette_outlined,
+            value: _selectedColor,
+            options: ArgentinaVehicles.commonColors
                 .map(
                   (String c) =>
-                      DropdownMenuItem<String>(value: c, child: Text(c)),
+                      TaxiyaSelectorOption<String>(value: c, label: c),
                 )
                 .toList(),
             onChanged: (String? val) {
@@ -682,13 +721,15 @@ class _DriverOnboardingScreenState
             ),
           ],
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
-            initialValue: _selectedType,
-            decoration: const InputDecoration(labelText: 'Tipo de vehículo'),
-            items: ArgentinaVehicles.vehicleTypes
+          TaxiyaSelectorField<String>(
+            label: 'Tipo de vehículo',
+            sheetTitle: 'Elegí el tipo de vehículo',
+            prefixIcon: Icons.commute_rounded,
+            value: _selectedType,
+            options: ArgentinaVehicles.vehicleTypes
                 .map(
                   (String t) =>
-                      DropdownMenuItem<String>(value: t, child: Text(t)),
+                      TaxiyaSelectorOption<String>(value: t, label: t),
                 )
                 .toList(),
             onChanged: (String? val) {

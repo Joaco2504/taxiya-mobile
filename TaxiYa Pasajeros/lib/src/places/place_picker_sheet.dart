@@ -167,14 +167,16 @@ class _PlacePickerSheetState extends ConsumerState<PlacePickerSheet> {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
-                    initialValue: category,
-                    decoration: const InputDecoration(labelText: 'Categoría'),
-                    items: categories
+                  TaxiyaSelectorField<String>(
+                    label: 'Categoría',
+                    sheetTitle: 'Elegí una categoría',
+                    prefixIcon: Icons.category_outlined,
+                    value: category,
+                    options: categories
                         .map(
-                          (String c) => DropdownMenuItem<String>(
+                          (String c) => TaxiyaSelectorOption<String>(
                             value: c,
-                            child: Text(c),
+                            label: c,
                           ),
                         )
                         .toList(),

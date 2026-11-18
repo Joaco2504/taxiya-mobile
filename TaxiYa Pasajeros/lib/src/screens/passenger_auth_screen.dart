@@ -79,7 +79,7 @@ class _PassengerAuthScreenState extends ConsumerState<PassengerAuthScreen> {
             phone: _phoneCtrl.text.trim(),
             email: email,
             localityId: localityId,
-            avatarUrl: TaxiyaAvatars.catalog.first.storageUri,
+            avatarUrl: TaxiyaAvatars.passengerCatalog.first.storageUri,
             accountStatus: TaxiyaAccountStatus.active,
           );
         } else if (mounted) {
@@ -109,7 +109,7 @@ class _PassengerAuthScreenState extends ConsumerState<PassengerAuthScreen> {
               email: user.email ?? email,
               localityId:
                   (user.userMetadata?['locality_id'] as String?) ?? localityId,
-              avatarUrl: TaxiyaAvatars.catalog.first.storageUri,
+              avatarUrl: TaxiyaAvatars.passengerCatalog.first.storageUri,
               accountStatus: TaxiyaAccountStatus.active,
             );
           } else if (existing.role != TaxiyaRole.passenger) {
@@ -305,18 +305,18 @@ class _PassengerAuthScreenState extends ConsumerState<PassengerAuthScreen> {
                               ),
                               const SizedBox(height: 14),
                               if (localities.isNotEmpty)
-                                DropdownButtonFormField<String>(
-                                  initialValue: _selectedLocalityId,
-                                  decoration: const InputDecoration(
-                                    labelText: 'Localidad',
-                                    prefixIcon: Icon(Icons.location_city_rounded),
-                                  ),
-                                  items: localities
+                                TaxiyaSelectorField<String>(
+                                  label: 'Localidad',
+                                  sheetTitle: 'Elegí tu localidad',
+                                  prefixIcon: Icons.location_city_rounded,
+                                  value: _selectedLocalityId,
+                                  options: localities
                                       .map(
                                         (Locality l) =>
-                                            DropdownMenuItem<String>(
+                                            TaxiyaSelectorOption<String>(
                                               value: l.id,
-                                              child: Text(l.name),
+                                              label: l.name,
+                                              subtitle: l.province,
                                             ),
                                       )
                                       .toList(),

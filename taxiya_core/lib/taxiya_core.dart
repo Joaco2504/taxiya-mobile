@@ -11,3 +11,4 @@ export 'src/theme/taxiya_theme.dart';
 export 'src/utils/date_format_utils.dart';
 export 'src/utils/postgis_utils.dart';
 export 'src/widgets/taxiya_avatar.dart';
+export 'src/widgets/taxiya_selector_field.dart';

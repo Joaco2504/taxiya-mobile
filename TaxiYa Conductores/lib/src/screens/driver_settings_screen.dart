@@ -249,8 +249,10 @@ class _DriverSettingsScreenState extends ConsumerState<DriverSettingsScreen> {
                     Wrap(
                       spacing: 10,
                       runSpacing: 10,
-                      children: TaxiyaAvatars.catalog.map((preset) {
-                        final selected = profile.avatarUrl == preset.storageUri;
+                      children: TaxiyaAvatars.driverCatalog.map((preset) {
+                        final selected =
+                            TaxiyaAvatars.fromUri(profile.avatarUrl)?.id ==
+                            preset.id;
                         return InkWell(
                           borderRadius: BorderRadius.circular(28),
                           onTap: () => _selectPresetAvatar(profile, preset),
@@ -265,14 +267,9 @@ class _DriverSettingsScreenState extends ConsumerState<DriverSettingsScreen> {
                                 width: 2.5,
                               ),
                             ),
-                            child: CircleAvatar(
+                            child: TaxiyaPresetAvatarBadge(
+                              preset: preset,
                               radius: 21,
-                              backgroundColor: preset.backgroundColor,
-                              child: Icon(
-                                preset.icon,
-                                color: preset.foregroundColor,
-                                size: 22,
-                              ),
                             ),
                           ),
                         );

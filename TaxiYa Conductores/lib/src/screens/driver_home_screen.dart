@@ -27,11 +27,18 @@ class DriverHomeScreen extends ConsumerStatefulWidget {
 
 class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
   MapboxMap? _mapboxMap;
+  CircleAnnotationManager? _selfMarkerManager;
+  CircleAnnotation? _selfMarker;
+  final List<StreamSubscription<MapContentGestureContext>> _gestureSubs =
+      <StreamSubscription<MapContentGestureContext>>[];
+
   Timer? _foregroundGpsTimer;
   Timer? _clockRefreshTimer;
   bool _togglingStatus = false;
   bool _gpsSyncError = false;
+  bool _followUserLocation = true;
   bool? _lastAppliedDarkStyle;
+  late GeoPoint _initialCameraCenter;
   GeoPoint? _latestGps;
   DateTime? _lastSyncAt;
 
@@ -40,6 +47,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
     super.initState();
     _latestGps = widget.details.currentLocation;
     _lastSyncAt = widget.details.lastLocationAt;
+    _initialCameraCenter =
+        widget.details.currentLocation ?? _localityCenter();
     if (widget.details.isOnline) {
       _startGpsLoop();
     }
@@ -76,6 +85,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
   void dispose() {
     _foregroundGpsTimer?.cancel();
     _clockRefreshTimer?.cancel();
+    for (final sub in _gestureSubs) {
+      unawaited(sub.cancel());
+    }
+    _gestureSubs.clear();
     super.dispose();
   }
 
@@ -98,6 +111,11 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
     final repo = ref.read(taxiyaRepositoryProvider);
     final point = await DriverLocationController.getCurrentGeoPoint();
     if (point == null) return;
+
+    await _updateDriverMarker(point);
+    if (_followUserLocation) {
+      await _followDriverPosition(point);
+    }
 
     try {
       await repo.pushDriverLocation(
@@ -154,10 +172,16 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
           isOnline: true,
           location: point,
         );
-        _latestGps = point;
-        _lastSyncAt = DateTime.now();
+        if (mounted) {
+          setState(() {
+            _latestGps = point;
+            _lastSyncAt = DateTime.now();
+            _followUserLocation = true;
+          });
+        }
         _startGpsLoop();
-        await _centerMapOn(point);
+        await _updateDriverMarker(point);
+        await _centerMapOn(point, ensureComfortableZoom: true);
       } else {
         _stopGpsLoop();
         await repo.setDriverOnlineStatus(
@@ -205,43 +229,113 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
     return _currentLocality()?.center ?? CatamarcaDefaults.belen;
   }
 
-  Future<void> _centerMapOn(GeoPoint target) async {
+  Future<void> _updateDriverMarker(GeoPoint point) async {
+    final manager = _selfMarkerManager;
+    if (manager == null) return;
+    final coords = Point(coordinates: Position(point.lng, point.lat));
+    final markerColor = (widget.details.isOnline
+            ? TaxiyaColors.lightSuccess
+            : TaxiyaColors.lightPrimary)
+        .toARGB32();
+    final existing = _selfMarker;
+    if (existing == null) {
+      _selfMarker = await manager.create(
+        CircleAnnotationOptions(
+          geometry: coords,
+          circleRadius: 10.5,
+          circleColor: markerColor,
+          circleStrokeColor: Colors.white.toARGB32(),
+          circleStrokeWidth: 3.0,
+        ),
+      );
+    } else {
+      existing.geometry = coords;
+      existing.circleColor = markerColor;
+      await manager.update(existing);
+    }
+  }
+
+  Future<void> _followDriverPosition(GeoPoint target) async {
     final map = _mapboxMap;
-    if (map == null) return;
+    if (map == null || !_followUserLocation) return;
+    final cam = await map.getCameraState();
+    if (!mounted || !_followUserLocation) return;
     await map.flyTo(
       CameraOptions(
         center: Point(coordinates: Position(target.lng, target.lat)),
-        zoom: 15.2,
+        zoom: cam.zoom,
+      ),
+      MapAnimationOptions(duration: 450),
+    );
+  }
+
+  Future<void> _centerMapOn(
+    GeoPoint target, {
+    bool ensureComfortableZoom = false,
+  }) async {
+    final map = _mapboxMap;
+    if (map == null) return;
+    final cam = await map.getCameraState();
+    final targetZoom = ensureComfortableZoom && cam.zoom < 14.5
+        ? 15.2
+        : cam.zoom;
+    await map.flyTo(
+      CameraOptions(
+        center: Point(coordinates: Position(target.lng, target.lat)),
+        zoom: targetZoom,
       ),
       MapAnimationOptions(duration: 600),
     );
   }
 
   Future<void> _recenterOnDriver() async {
+    setState(() => _followUserLocation = true);
     final perm = await DriverLocationController.ensurePermissions();
     if (!perm.granted) {
-      await _centerMapOn(_latestGps ?? _localityCenter());
+      final fallback = _latestGps ?? _localityCenter();
+      await _updateDriverMarker(fallback);
+      await _centerMapOn(fallback, ensureComfortableZoom: true);
       return;
     }
     final point =
         await DriverLocationController.getCurrentGeoPoint() ??
         _latestGps ??
         _localityCenter();
-    await _centerMapOn(point);
+    await _updateDriverMarker(point);
+    await _centerMapOn(point, ensureComfortableZoom: true);
   }
 
-  void _onMapCreated(MapboxMap map) {
+  void _onUserMapGesture(MapContentGestureContext _) {
+    if (_followUserLocation && mounted) {
+      setState(() => _followUserLocation = false);
+    }
+  }
+
+  Future<void> _onMapCreated(MapboxMap map) async {
     _mapboxMap = map;
     _lastAppliedDarkStyle = Theme.of(context).brightness == Brightness.dark;
-    unawaited(
-      map.location.updateSettings(
-        LocationComponentSettings(
-          enabled: true,
-          pulsingEnabled: true,
-          showAccuracyRing: true,
-        ),
+
+    for (final sub in _gestureSubs) {
+      await sub.cancel();
+    }
+    _gestureSubs
+      ..clear()
+      ..add(map.gestures.pan.gestureEvents.listen(_onUserMapGesture))
+      ..add(map.gestures.zoom.gestureEvents.listen(_onUserMapGesture))
+      ..add(map.gestures.rotate.gestureEvents.listen(_onUserMapGesture))
+      ..add(map.gestures.pitch.gestureEvents.listen(_onUserMapGesture));
+
+    await map.location.updateSettings(
+      LocationComponentSettings(
+        enabled: true,
+        pulsingEnabled: true,
+        showAccuracyRing: true,
       ),
     );
+
+    _selfMarkerManager = await map.annotations.createCircleAnnotationManager();
+    final markerPoint = _latestGps ?? _initialCameraCenter;
+    await _updateDriverMarker(markerPoint);
   }
 
   @override
@@ -252,8 +346,6 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
     final locality = _currentLocality();
     final company = _currentCompany();
     final isOnline = widget.details.isOnline;
-    final initialCenter =
-        _latestGps ?? locality?.center ?? CatamarcaDefaults.belen;
 
     final expiry = widget.details.permitExpiryDate;
     final daysToExpire = expiry?.difference(DateTime.now()).inDays;
@@ -318,7 +410,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
             styleUri: isDark ? MapboxStyles.DARK : MapboxStyles.MAPBOX_STREETS,
             viewport: CameraViewportState(
               center: Point(
-                coordinates: Position(initialCenter.lng, initialCenter.lat),
+                coordinates: Position(
+                  _initialCameraCenter.lng,
+                  _initialCameraCenter.lat,
+                ),
               ),
               zoom: 14.5,
             ),
@@ -363,17 +458,18 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
             ),
           ),
 
-          // Botón de centrar cámara
-          Positioned(
-            right: 16,
-            bottom: 224,
-            child: FloatingActionButton.small(
-              heroTag: 'driver_recenter',
-              onPressed: _recenterOnDriver,
-              tooltip: 'Centrar en mi ubicación',
-              child: const Icon(Icons.my_location_rounded),
+          // Botón flotante para recentrar y reactivar el seguimiento de cámara
+          if (!_followUserLocation)
+            Positioned(
+              right: 16,
+              bottom: 224,
+              child: FloatingActionButton.extended(
+                heroTag: 'driver_recenter',
+                onPressed: _recenterOnDriver,
+                icon: const Icon(Icons.my_location_rounded),
+                label: const Text('Mi ubicación'),
+              ),
             ),
-          ),
 
           // Panel inferior grande y claro para operar con una mano
           Positioned(

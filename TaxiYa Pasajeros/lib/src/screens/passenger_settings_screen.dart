@@ -235,8 +235,10 @@ class _PassengerSettingsScreenState
                     Wrap(
                       spacing: 10,
                       runSpacing: 10,
-                      children: TaxiyaAvatars.catalog.map((preset) {
-                        final selected = profile.avatarUrl == preset.storageUri;
+                      children: TaxiyaAvatars.passengerCatalog.map((preset) {
+                        final selected =
+                            TaxiyaAvatars.fromUri(profile.avatarUrl)?.id ==
+                            preset.id;
                         return InkWell(
                           borderRadius: BorderRadius.circular(28),
                           onTap: () => _selectPreset(profile, preset),
@@ -251,14 +253,9 @@ class _PassengerSettingsScreenState
                                 width: 2.5,
                               ),
                             ),
-                            child: CircleAvatar(
+                            child: TaxiyaPresetAvatarBadge(
+                              preset: preset,
                               radius: 21,
-                              backgroundColor: preset.backgroundColor,
-                              child: Icon(
-                                preset.icon,
-                                color: preset.foregroundColor,
-                                size: 22,
-                              ),
                             ),
                           ),
                         );
@@ -307,16 +304,17 @@ class _PassengerSettingsScreenState
                     ),
                     if (localities.isNotEmpty) ...[
                       const SizedBox(height: 12),
-                      DropdownButtonFormField<String>(
-                        initialValue: _selectedLocalityId ?? localities.first.id,
-                        decoration: const InputDecoration(
-                          labelText: 'Localidad habitual',
-                        ),
-                        items: localities
+                      TaxiyaSelectorField<String>(
+                        label: 'Localidad habitual',
+                        sheetTitle: 'Elegí tu localidad habitual',
+                        prefixIcon: Icons.location_city_rounded,
+                        value: _selectedLocalityId ?? localities.first.id,
+                        options: localities
                             .map(
-                              (Locality l) => DropdownMenuItem<String>(
+                              (Locality l) => TaxiyaSelectorOption<String>(
                                 value: l.id,
-                                child: Text(l.name),
+                                label: l.name,
+                                subtitle: l.province,
                               ),
                             )
                             .toList(),

@@ -78,6 +78,7 @@ class _DriverAuthScreenState extends ConsumerState<DriverAuthScreen> {
             phone: _phoneCtrl.text.trim(),
             email: email,
             localityId: localityId,
+            avatarUrl: TaxiyaAvatars.driverCatalog.first.storageUri,
             accountStatus: TaxiyaAccountStatus.pending,
           );
         } else if (mounted) {
@@ -109,6 +110,7 @@ class _DriverAuthScreenState extends ConsumerState<DriverAuthScreen> {
               email: user.email ?? email,
               localityId:
                   (user.userMetadata?['locality_id'] as String?) ?? localityId,
+              avatarUrl: TaxiyaAvatars.driverCatalog.first.storageUri,
               accountStatus: TaxiyaAccountStatus.pending,
             );
           } else if (existing.role != TaxiyaRole.driver) {
@@ -304,18 +306,18 @@ class _DriverAuthScreenState extends ConsumerState<DriverAuthScreen> {
                               ),
                               const SizedBox(height: 14),
                               if (localities.isNotEmpty)
-                                DropdownButtonFormField<String>(
-                                  initialValue: _selectedLocalityId,
-                                  decoration: const InputDecoration(
-                                    labelText: 'Localidad donde trabajás',
-                                    prefixIcon: Icon(Icons.location_city_rounded),
-                                  ),
-                                  items: localities
+                                TaxiyaSelectorField<String>(
+                                  label: 'Localidad donde trabajás',
+                                  sheetTitle: 'Elegí tu localidad',
+                                  prefixIcon: Icons.location_city_rounded,
+                                  value: _selectedLocalityId,
+                                  options: localities
                                       .map(
                                         (Locality l) =>
-                                            DropdownMenuItem<String>(
+                                            TaxiyaSelectorOption<String>(
                                               value: l.id,
-                                              child: Text(l.name),
+                                              label: l.name,
+                                              subtitle: l.province,
                                             ),
                                       )
                                       .toList(),

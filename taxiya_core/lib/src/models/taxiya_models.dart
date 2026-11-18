@@ -282,6 +282,8 @@ class DriverDetails {
   const DriverDetails({
     required this.userId,
     required this.companyId,
+    this.dni,
+    this.municipalMobileNum,
     required this.carBrand,
     required this.carModel,
     required this.carColor,
@@ -304,6 +306,8 @@ class DriverDetails {
 
   final String userId;
   final String? companyId;
+  final String? dni;
+  final String? municipalMobileNum;
   final String? carBrand;
   final String? carModel;
   final String? carColor;
@@ -324,6 +328,7 @@ class DriverDetails {
   final int totalTrips;
 
   bool get hasCompleteDossier =>
+      (dni?.trim().isNotEmpty ?? false) &&
       (selfieUrl?.isNotEmpty ?? false) &&
       (licenseFrontUrl?.isNotEmpty ?? false) &&
       (licenseBackUrl?.isNotEmpty ?? false) &&
@@ -341,6 +346,8 @@ class DriverDetails {
     return DriverDetails(
       userId: json['user_id'] as String,
       companyId: json['company_id'] as String?,
+      dni: json['dni'] as String?,
+      municipalMobileNum: json['municipal_mobile_num'] as String?,
       carBrand: json['car_brand'] as String?,
       carModel: json['car_model'] as String?,
       carColor: json['car_color'] as String?,
@@ -365,6 +372,8 @@ class DriverDetails {
   Map<String, dynamic> toCacheJson() => {
     'user_id': userId,
     'company_id': companyId,
+    'dni': dni,
+    'municipal_mobile_num': municipalMobileNum,
     'car_brand': carBrand,
     'car_model': carModel,
     'car_color': carColor,
