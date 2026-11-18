@@ -62,3 +62,37 @@ final passengerLandmarksProvider = FutureProvider<List<Landmark>>((Ref ref) {
     userId: profile?.id,
   );
 });
+
+/// Último viaje registrado del pasajero en tiempo real.
+final activePassengerTripProvider = StreamProvider.autoDispose<Trip?>((Ref ref) {
+  final profile = ref.watch(currentProfileProvider).value;
+  if (profile == null) return Stream<Trip?>.value(null);
+  return ref.watch(taxiyaRepositoryProvider).watchLatestPassengerTrip(profile.id);
+});
+
+/// Último viaje completado del pasajero para "Repetir último viaje".
+final lastCompletedTripProvider = FutureProvider.autoDispose<Trip?>((Ref ref) {
+  final profile = ref.watch(currentProfileProvider).value;
+  if (profile == null) return null;
+  return ref
+      .watch(taxiyaRepositoryProvider)
+      .fetchLastCompletedPassengerTrip(profile.id);
+});
+
+/// Base del viaje de ida y vuelta liberado (>10 min) esperando botón "Ya estoy listo para volver".
+class PendingReturnTripNotifier extends Notifier<Trip?> {
+  @override
+  Trip? build() {
+    return ref.watch(hiveCacheProvider).loadPendingReturnBaseTrip();
+  }
+
+  Future<void> setPending(Trip? trip) async {
+    state = trip;
+    await ref.read(hiveCacheProvider).savePendingReturnBaseTrip(trip);
+  }
+}
+
+final pendingReturnTripProvider =
+    NotifierProvider<PendingReturnTripNotifier, Trip?>(
+      PendingReturnTripNotifier.new,
+    );

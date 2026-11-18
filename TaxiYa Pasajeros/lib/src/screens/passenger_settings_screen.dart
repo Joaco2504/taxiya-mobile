@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:taxiya_core/taxiya_core.dart';
 
+import '../features/support/passenger_help_screen.dart';
 import '../services/passenger_image_helper.dart';
 
 /// Configuración del pasajero: nombre, correo, selfie o 12 avatares, localidad, tema y avisos.
@@ -425,6 +426,25 @@ class _PassengerSettingsScreenState
               ),
             ),
             const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: () {
+                var locName = 'Catamarca';
+                for (final l in localities) {
+                  if (l.id == profile.localityId) {
+                    locName = l.name;
+                    break;
+                  }
+                }
+                openPassengerHelpScreen(
+                  context: context,
+                  profile: profile,
+                  localityName: locName,
+                );
+              },
+              icon: const Icon(Icons.help_outline_rounded),
+              label: const Text('Ayuda y guía de uso'),
+            ),
+            const SizedBox(height: 10),
             OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
                 foregroundColor: colors.error,

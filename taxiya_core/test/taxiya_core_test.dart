@@ -96,4 +96,139 @@ void main() {
       );
     });
   });
+
+  group('Phase 4 Trip, Gamification, Audio & External Launchers', () {
+    test('parses Trip with Fase 4 statuses, round-trip wait_minutes and chat 15m lock', () {
+      final now = DateTime.now();
+      final recentCompleted = Trip.fromJson(<String, dynamic>{
+        'id': 't1',
+        'passenger_id': 'p1',
+        'driver_id': 'd1',
+        'locality_id': 'loc1',
+        'status': 'completed',
+        'origin_address': 'Plaza Olmos',
+        'origin_point': 'SRID=4326;POINT(-67.0286 -27.6514)',
+        'dest_address': 'Hospital Belén',
+        'dest_point': 'SRID=4326;POINT(-67.0300 -27.6540)',
+        'is_round_trip': true,
+        'wait_minutes': 15,
+        'completed_at': now.subtract(const Duration(minutes: 10)).toIso8601String(),
+        'created_at': now.subtract(const Duration(minutes: 20)).toIso8601String(),
+      });
+      expect(recentCompleted.status, TripStatus.completed);
+      expect(recentCompleted.isRoundTrip, isTrue);
+      expect(recentCompleted.waitMinutes, 15);
+      expect(recentCompleted.isChatWritable, isTrue);
+
+      final oldCancelled = Trip.fromJson(<String, dynamic>{
+        'id': 't2',
+        'passenger_id': 'p1',
+        'driver_id': 'd1',
+        'status': 'cancelled',
+        'completed_at': now.subtract(const Duration(minutes: 18)).toIso8601String(),
+      });
+      expect(oldCancelled.status, TripStatus.cancelled);
+      expect(oldCancelled.isChatWritable, isFalse);
+
+      expect(TripStatus.fromString('searching'), TripStatus.searching);
+      expect(TripStatus.fromString('in_door'), TripStatus.inDoor);
+      expect(TripStatus.fromString('waiting_return'), TripStatus.waitingReturn);
+    });
+
+    test('evaluates scheduled dispatch 30-minute threshold accurately', () {
+      final refNow = DateTime(2026, 11, 18, 10, 0);
+      final futureScheduled = Trip.fromJson(<String, dynamic>{
+        'id': 's1',
+        'passenger_id': 'p1',
+        'status': 'searching',
+        'is_round_trip': false,
+        'scheduled_for': DateTime(2026, 11, 18, 11, 0).toIso8601String(),
+      });
+      expect(futureScheduled.isScheduledStillDormant(refNow), isTrue);
+      expect(futureScheduled.isReadyForDriverDispatch(refNow), isFalse);
+
+      final dueSoon = Trip.fromJson(<String, dynamic>{
+        'id': 's2',
+        'passenger_id': 'p1',
+        'status': 'searching',
+        'is_round_trip': false,
+        'scheduled_for': DateTime(2026, 11, 18, 10, 25).toIso8601String(),
+      });
+      expect(dueSoon.isScheduledStillDormant(refNow), isFalse);
+      expect(dueSoon.isReadyForDriverDispatch(refNow), isTrue);
+    });
+
+    test('computes driver metrics, night shift count and badges cleanly', () {
+      final refNow = DateTime(2026, 11, 18, 14, 0);
+      final trips = <Trip>[
+        for (var i = 0; i < 20; i++)
+          Trip(
+            id: 'trip-$i',
+            passengerId: 'p1',
+            driverId: 'd1',
+            localityId: 'loc1',
+            status: TripStatus.completed,
+            originAddress: 'Centro',
+            originPoint: null,
+            destAddress: 'Barrio Sur',
+            destPoint: null,
+            isRoundTrip: false,
+            waitMinutes: null,
+            scheduledFor: null,
+            cancelReason: null,
+            cancelledBy: null,
+            acceptedAt: refNow.subtract(Duration(minutes: i * 10)),
+            startedAt: i < 5
+                ? DateTime(2026, 11, 18, 2, 15)
+                : DateTime(2026, 11, 18, 12 + (i % 6), 0),
+            completedAt: refNow.subtract(Duration(minutes: i * 10)),
+            createdAt: refNow.subtract(Duration(minutes: i * 10)),
+          ),
+      ];
+      final ratings = List<TripRating>.generate(
+        15,
+        (int i) => TripRating(
+          id: 'r-$i',
+          tripId: 'trip-$i',
+          passengerId: 'p1',
+          driverId: 'd1',
+          stars: 5,
+          comment: null,
+          createdAt: refNow,
+        ),
+      );
+
+      final stats = DriverStatsCalculator.compute(
+        driverId: 'd1',
+        period: StatsPeriod.week,
+        trips: trips,
+        ratings: ratings,
+        onlineHoursInPeriod: 12.5,
+        now: refNow,
+      );
+
+      expect(stats.completedTrips, 20);
+      expect(stats.nightShiftTrips, 5);
+      expect(stats.noCancelStreak, 20);
+      expect(stats.averageRating, 5.0);
+      expect(stats.earnedBadgeCodes, containsAll(DriverBadgeCode.values));
+      expect(stats.hasOrderPriorityReward, isTrue);
+      expect(stats.hasGoldBorderReward, isTrue);
+      expect(stats.hasZoneStatsReward, isTrue);
+    });
+
+    test('synthesizes valid PCM WAV headers and formats WhatsApp URLs', () {
+      final wav = TaxiyaSoundGenerator.buildChimeWav();
+      expect(wav.length, greaterThan(44));
+      expect(String.fromCharCodes(wav.sublist(0, 4)), 'RIFF');
+      expect(String.fromCharCodes(wav.sublist(8, 12)), 'WAVE');
+
+      final waUri = TaxiyaExternalLauncher.buildWhatsAppUri(
+        phoneDigits: '03835412345',
+        message: 'Hola soporte',
+      );
+      expect(waUri.toString(), contains('https://wa.me/5493835412345'));
+      expect(waUri.queryParameters['text'], 'Hola soporte');
+    });
+  });
 }

@@ -17,6 +17,10 @@ abstract final class TaxiyaEnv {
   static const String mapboxAccessToken = String.fromEnvironment(
     'MAPBOX_ACCESS_TOKEN',
   );
+  static const String supportWhatsAppNumber = String.fromEnvironment(
+    'TAXIYA_SUPPORT_WHATSAPP',
+    defaultValue: '',
+  );
 
   static const String schema = 'taxiya';
   static const String bucketPublic = 'taxiya_public';

@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:taxiya_core/taxiya_core.dart';
 
+import '../features/stats/driver_performance_screen.dart';
+import '../features/support/driver_help_screen.dart';
 import '../providers/driver_providers.dart';
 import '../services/driver_location_service.dart';
 import '../services/image_upload_helper.dart';
@@ -472,6 +474,44 @@ class _DriverSettingsScreenState extends ConsumerState<DriverSettingsScreen> {
               ),
             ],
             const SizedBox(height: 16),
+            if (details != null) ...[
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => DriverPerformanceScreen(
+                        profile: profile,
+                        details: details,
+                      ),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.emoji_events_outlined),
+                label: const Text('Tu rendimiento y logros'),
+              ),
+              const SizedBox(height: 10),
+            ],
+            OutlinedButton.icon(
+              onPressed: () {
+                final localities =
+                    ref.read(localitiesProvider).value ?? const <Locality>[];
+                var locName = 'Catamarca';
+                for (final l in localities) {
+                  if (l.id == profile.localityId) {
+                    locName = l.name;
+                    break;
+                  }
+                }
+                openDriverHelpScreen(
+                  context: context,
+                  profile: profile,
+                  localityName: locName,
+                );
+              },
+              icon: const Icon(Icons.help_outline_rounded),
+              label: const Text('Ayuda y guía de uso'),
+            ),
+            const SizedBox(height: 10),
             OutlinedButton.icon(
               onPressed: () {
                 Navigator.of(context).pop();

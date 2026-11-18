@@ -1,10 +1,16 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 import 'package:taxiya_core/taxiya_core.dart';
 
+import '../features/stats/driver_performance_screen.dart';
+import '../features/support/driver_help_screen.dart';
+import '../features/trips/driver_trip_widgets.dart';
+import '../providers/driver_providers.dart';
 import '../services/driver_location_service.dart';
 import 'driver_settings_screen.dart';
 
@@ -42,6 +48,24 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
   GeoPoint? _latestGps;
   DateTime? _lastSyncAt;
 
+  // Fase 4: Motor de viajes, alertas, cola offline y anti-ghosting
+  final TaxiyaSoundService _sound = TaxiyaSoundService();
+  final FlutterLocalNotificationsPlugin _localNotifications =
+      FlutterLocalNotificationsPlugin();
+  final Set<String> _dismissedOrderIds = <String>{};
+  String? _ringingOrderId;
+  bool _acceptingOrder = false;
+  bool _updatingTrip = false;
+  Trip? _optimisticTrip;
+  Profile? _passengerProfile;
+  String? _loadedPassengerId;
+
+  String? _trackedGhostTripId;
+  DateTime? _lastApproachProgressAt;
+  double? _bestDistToOriginMeters;
+  String? _warned3MinTripId;
+  bool _releasingGhostTrip = false;
+
   @override
   void initState() {
     super.initState();
@@ -49,11 +73,16 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
     _lastSyncAt = widget.details.lastLocationAt;
     _initialCameraCenter =
         widget.details.currentLocation ?? _localityCenter();
+    unawaited(_initAlertNotificationChannel());
     if (widget.details.isOnline) {
       _startGpsLoop();
+      unawaited(ref.read(hiveCacheProvider).recordOnlineSessionStart());
+      unawaited(ref.read(taxiyaRepositoryProvider).flushPendingTripMutations());
     }
-    _clockRefreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (mounted) setState(() {});
+    _clockRefreshTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted) return;
+      _checkGhostCancelWatchdog();
+      setState(() {});
     });
   }
 
@@ -64,6 +93,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       _startGpsLoop();
     } else if (oldWidget.details.isOnline && !widget.details.isOnline) {
       _stopGpsLoop();
+      unawaited(_stopIncomingOrderAlert());
     }
   }
 
@@ -85,6 +115,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
   void dispose() {
     _foregroundGpsTimer?.cancel();
     _clockRefreshTimer?.cancel();
+    unawaited(_sound.dispose());
     for (final sub in _gestureSubs) {
       unawaited(sub.cancel());
     }
@@ -122,6 +153,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
         userId: widget.profile.id,
         point: point,
       );
+      await repo.flushPendingTripMutations();
       if (mounted) {
         setState(() {
           _latestGps = point;
@@ -338,6 +370,467 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
     await _updateDriverMarker(markerPoint);
   }
 
+  Future<void> _initAlertNotificationChannel() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+      await _localNotifications.initialize(
+        settings: const InitializationSettings(android: androidInit),
+      );
+      final androidPlugin = _localNotifications
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >();
+      await androidPlugin?.createNotificationChannel(
+        const AndroidNotificationChannel(
+          'taxiya_driver_orders',
+          'Pedidos y alertas de viaje',
+          description:
+              'Notificaciones prioritarias cuando entra un pedido o vence una demora.',
+          importance: Importance.max,
+        ),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _showLocalAlert({
+    required int id,
+    required String title,
+    required String body,
+  }) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      await _localNotifications.show(
+        id: id,
+        title: title,
+        body: body,
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'taxiya_driver_orders',
+            'Pedidos y alertas de viaje',
+            importance: Importance.max,
+            priority: Priority.max,
+          ),
+        ),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _syncIncomingOrderAlert(Trip? eligibleOrder) async {
+    if (eligibleOrder == null || !widget.details.isOnline) {
+      if (_ringingOrderId != null) {
+        _ringingOrderId = null;
+        await _sound.stopOrderRing();
+      }
+      return;
+    }
+
+    if (_ringingOrderId != eligibleOrder.id) {
+      _ringingOrderId = eligibleOrder.id;
+      final notify = ref.read(hiveCacheProvider).notifyTrips;
+      if (notify) {
+        await _sound.startOrderRing();
+        await _showLocalAlert(
+          id: 9101,
+          title: 'Nuevo pedido de taxi',
+          body:
+              'Subida: ${eligibleOrder.originAddress ?? 'Ver ubicación en mapa'}',
+        );
+      }
+    }
+  }
+
+  Future<void> _stopIncomingOrderAlert() async {
+    _ringingOrderId = null;
+    await _sound.stopOrderRing();
+  }
+
+  Trip? _selectEligibleIncomingOrder(
+    List<Trip> searchingTrips,
+    List<DriverBadge> badges,
+  ) {
+    if (!widget.details.isOnline) return null;
+    final hasPriority = badges.any(
+      (DriverBadge b) => b.isActive && (b.badgeCode?.grantsOrderPriority ?? false),
+    );
+    final now = DateTime.now();
+
+    for (final trip in searchingTrips) {
+      if (_dismissedOrderIds.contains(trip.id)) continue;
+      if (!trip.isReadyForDriverDispatch(now)) continue;
+
+      // Recompensa de 5 segundos de ventaja para choferes con insignias activas.
+      if (!hasPriority && trip.createdAt != null) {
+        final ageSec = now.difference(trip.createdAt!.toLocal()).inSeconds;
+        if (ageSec < 5) continue;
+      }
+      return trip;
+    }
+    return null;
+  }
+
+  Future<void> _loadPassengerForTrip(String passengerId) async {
+    if (_loadedPassengerId == passengerId) return;
+    _loadedPassengerId = passengerId;
+    final prof = await ref
+        .read(taxiyaRepositoryProvider)
+        .fetchPublicProfileReadOnly(passengerId);
+    if (mounted) {
+      setState(() => _passengerProfile = prof);
+    }
+  }
+
+  void _checkGhostCancelWatchdog() {
+    if (_releasingGhostTrip) return;
+    final streamTrip = ref.read(activeDriverTripProvider).value;
+    final trip = _optimisticTrip ?? streamTrip;
+    if (trip == null ||
+        (trip.status != TripStatus.accepted &&
+            trip.status != TripStatus.arriving)) {
+      _trackedGhostTripId = null;
+      _lastApproachProgressAt = null;
+      _bestDistToOriginMeters = null;
+      _warned3MinTripId = null;
+      return;
+    }
+
+    final origin = trip.originPoint;
+    final driverGps = _latestGps ?? widget.details.currentLocation;
+    if (origin == null || driverGps == null) return;
+
+    final dist = haversineDistanceMeters(
+      driverGps.lat,
+      driverGps.lng,
+      origin.lat,
+      origin.lng,
+    );
+
+    if (_trackedGhostTripId != trip.id) {
+      _trackedGhostTripId = trip.id;
+      _lastApproachProgressAt = DateTime.now();
+      _bestDistToOriginMeters = dist;
+      _warned3MinTripId = null;
+      return;
+    }
+
+    final best = _bestDistToOriginMeters ?? dist;
+    if (dist < best - 30.0 || dist <= 120.0) {
+      _bestDistToOriginMeters = dist < best ? dist : best;
+      _lastApproachProgressAt = DateTime.now();
+      _warned3MinTripId = null;
+      return;
+    }
+
+    final baseline = _lastApproachProgressAt;
+    if (baseline == null) return;
+    final stagnantSeconds = DateTime.now().difference(baseline).inSeconds;
+
+    if (stagnantSeconds >= 180 &&
+        stagnantSeconds < 240 &&
+        _warned3MinTripId != trip.id) {
+      _warned3MinTripId = trip.id;
+      unawaited(_sound.playWarning());
+      unawaited(
+        _showLocalAlert(
+          id: 9102,
+          title: '¿Seguís yendo al punto de salida?',
+          body:
+              'En 1 minuto el viaje se liberará si no te acercás al pasajero.',
+        ),
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            duration: Duration(seconds: 6),
+            content: Text(
+              'Llevás 3 minutos sin acercarte al pasajero. Avanzá para no perder el viaje.',
+            ),
+          ),
+        );
+      }
+    } else if (stagnantSeconds >= 240) {
+      _releasingGhostTrip = true;
+      unawaited(_releaseGhostTrip(trip));
+    }
+  }
+
+  Future<void> _releaseGhostTrip(Trip trip) async {
+    try {
+      await ref.read(taxiyaRepositoryProvider).releaseTripToSearching(
+        tripId: trip.id,
+        driverId: widget.profile.id,
+        reason: 'auto_released_4min_no_approach',
+      );
+      if (mounted) {
+        setState(() {
+          _optimisticTrip = null;
+          _trackedGhostTripId = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            duration: Duration(seconds: 6),
+            content: Text(
+              'El viaje se liberó automáticamente tras 4 minutos sin acercarte.',
+            ),
+          ),
+        );
+      }
+    } catch (_) {
+      // Si falló la red, reintentará en el próximo ciclo.
+    } finally {
+      _releasingGhostTrip = false;
+    }
+  }
+
+  Future<void> _acceptIncomingOrder(Trip trip) async {
+    if (_acceptingOrder) return;
+    setState(() => _acceptingOrder = true);
+    await _stopIncomingOrderAlert();
+    try {
+      final taken = await ref
+          .read(taxiyaRepositoryProvider)
+          .acceptTripAtomically(tripId: trip.id, driverId: widget.profile.id);
+      if (!mounted) return;
+      if (taken == null) {
+        setState(() => _dismissedOrderIds.add(trip.id));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Otro taxi aceptó este pedido recién.'),
+          ),
+        );
+        return;
+      }
+      setState(() {
+        _optimisticTrip = taken;
+        _trackedGhostTripId = taken.id;
+        _lastApproachProgressAt = DateTime.now();
+      });
+      unawaited(_loadPassengerForTrip(taken.passengerId));
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No pudimos tomar el viaje. Revisá tu conexión e intentá de nuevo.',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _acceptingOrder = false);
+    }
+  }
+
+  Future<void> _advanceTripStatus(
+    Trip trip,
+    TripStatus nextStatus, {
+    String? cancelReason,
+    String? cancelledBy,
+    bool offlineFallback = true,
+  }) async {
+    if (_updatingTrip) return;
+    setState(() => _updatingTrip = true);
+    final repo = ref.read(taxiyaRepositoryProvider);
+    try {
+      final synced = await repo.updateTripStatus(
+        tripId: trip.id,
+        nextStatus: nextStatus,
+        cancelReason: cancelReason,
+        cancelledBy: cancelledBy,
+        queueOffline: offlineFallback,
+      );
+      if (!mounted) return;
+      setState(() {
+        _optimisticTrip = nextStatus.isTerminal
+            ? null
+            : trip.copyWith(status: nextStatus);
+      });
+      if (!synced) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Sin señal 4G. Guardamos el avance y se subirá al volver la señal.',
+            ),
+          ),
+        );
+      } else if (nextStatus == TripStatus.completed) {
+        unawaited(_syncDriverBadgesQuietly());
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Viaje finalizado. Seguís en línea.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No pudimos guardar el cambio. Probá de nuevo.'),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _updatingTrip = false);
+    }
+  }
+
+  Future<void> _syncDriverBadgesQuietly() async {
+    try {
+      final repo = ref.read(taxiyaRepositoryProvider);
+      final trips = await repo.fetchDriverTripsHistory(widget.profile.id);
+      final ratings = await repo.fetchDriverRatings(widget.profile.id);
+      final weekStart = DriverStatsCalculator.startOfPeriod(
+        DateTime.now(),
+        StatsPeriod.week,
+      );
+      final weekHours = ref
+          .read(hiveCacheProvider)
+          .calculateOnlineHoursSince(weekStart);
+      final stats = DriverStatsCalculator.compute(
+        driverId: widget.profile.id,
+        period: StatsPeriod.week,
+        trips: trips,
+        ratings: ratings,
+        onlineHoursInPeriod: weekHours,
+        profileRatingAvg: widget.details.ratingAvg,
+      );
+      if (stats.earnedBadgeCodes.isNotEmpty) {
+        await repo.syncEarnedDriverBadges(
+          driverId: widget.profile.id,
+          earnedCodes: stats.earnedBadgeCodes,
+        );
+        ref.invalidate(driverBadgesProvider);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _cancelActiveTrip(Trip trip) async {
+    const reasons = <String>[
+      'Falla mecánica del vehículo',
+      'Calle cortada o zona intransitable',
+      'No encontré al pasajero tras esperar',
+      'Otro inconveniente',
+    ];
+    var chosen = reasons.first;
+    final picked = await showDialog<String>(
+      context: context,
+      builder: (BuildContext ctx) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setLocalState) {
+            return AlertDialog(
+              title: const Text('Cancelar viaje'),
+              content: RadioGroup<String>(
+                groupValue: chosen,
+                onChanged: (String? val) {
+                  if (val != null) setLocalState(() => chosen = val);
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: reasons
+                      .map(
+                        (String r) => RadioListTile<String>(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          value: r,
+                          title: Text(r),
+                        ),
+                      )
+                      .toList(),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(null),
+                  child: const Text('Volver'),
+                ),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: ctx.taxiyaColors.error,
+                    foregroundColor: Colors.white,
+                  ),
+                  onPressed: () => Navigator.of(ctx).pop(chosen),
+                  child: const Text('Confirmar cancelación'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (picked == null || !mounted) return;
+    await _advanceTripStatus(
+      trip,
+      TripStatus.cancelled,
+      cancelReason: picked,
+      cancelledBy: widget.profile.id,
+      offlineFallback: false,
+    );
+  }
+
+  Future<void> _handleDriverPanic(Trip trip) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('Activar botón de pánico'),
+        content: const Text(
+          'Enviaremos una alerta prioritaria al centro operativo con tu ubicación actual y este viaje.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: ctx.taxiyaColors.error,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Enviar alerta ahora'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    final point =
+        await DriverLocationController.getCurrentGeoPoint() ??
+        _latestGps ??
+        _localityCenter();
+    final gpsLabel =
+        '${point.lat.toStringAsFixed(5)}, ${point.lng.toStringAsFixed(5)} · https://maps.google.com/?q=${point.lat},${point.lng}';
+
+    try {
+      await ref.read(taxiyaRepositoryProvider).createSupportTicket(
+        userId: widget.profile.id,
+        tripId: trip.id,
+        localityId: trip.localityId ?? widget.profile.localityId,
+        category: 'Emergencia del chofer',
+        description:
+            'EMERGENCIA EN VIAJE — Chofer: ${widget.profile.fullName ?? widget.profile.id} (Patente ${widget.details.plateNumber ?? 'N/D'}). GPS: $gpsLabel',
+        isEmergency: true,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            duration: Duration(seconds: 6),
+            content: Text(
+              'Alerta de emergencia enviada al centro operativo TaxiYa.',
+            ),
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No pudimos enviar la alerta sin señal. Llamá al 911 si corrés peligro.',
+            ),
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = context.taxiyaColors;
@@ -346,6 +839,32 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
     final locality = _currentLocality();
     final company = _currentCompany();
     final isOnline = widget.details.isOnline;
+
+    final searchingTrips =
+        ref.watch(searchingTripsProvider).value ?? const <Trip>[];
+    final streamActiveTrip = ref.watch(activeDriverTripProvider).value;
+    final badges = ref.watch(driverBadgesProvider).value ?? const <DriverBadge>[];
+    final activeTrip = _optimisticTrip != null && !_optimisticTrip!.status.isTerminal
+        ? (_optimisticTrip!)
+        : streamActiveTrip;
+    if (streamActiveTrip != null && _optimisticTrip != null) {
+      if (streamActiveTrip.status == _optimisticTrip!.status ||
+          streamActiveTrip.status.isTerminal) {
+        _optimisticTrip = null;
+      }
+    }
+
+    if (activeTrip != null && activeTrip.passengerId != _loadedPassengerId) {
+      unawaited(_loadPassengerForTrip(activeTrip.passengerId));
+    }
+
+    final incomingOrder = activeTrip == null
+        ? _selectEligibleIncomingOrder(searchingTrips, badges)
+        : null;
+    unawaited(_syncIncomingOrderAlert(incomingOrder));
+
+    final pendingMutationsCount =
+        ref.watch(hiveCacheProvider).loadPendingTripMutations().length;
 
     final expiry = widget.details.permitExpiryDate;
     final daysToExpire = expiry?.difference(DateTime.now()).inDays;
@@ -388,6 +907,32 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Tu rendimiento y logros',
+            icon: const Icon(Icons.emoji_events_outlined),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => DriverPerformanceScreen(
+                    profile: widget.profile,
+                    details: widget.details,
+                  ),
+                ),
+              );
+            },
+          ),
+          IconButton(
+            tooltip: 'Ayuda y guía de uso',
+            icon: const Icon(Icons.help_outline_rounded),
+            onPressed: () {
+              openDriverHelpScreen(
+                context: context,
+                profile: widget.profile,
+                localityName: locality?.name ?? 'Catamarca',
+                activeTripId: activeTrip?.id,
+              );
+            },
+          ),
           IconButton(
             tooltip: 'Configuración',
             icon: const Icon(Icons.settings_rounded),
@@ -458,149 +1003,220 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
             ),
           ),
 
-          // Botón flotante para recentrar y reactivar el seguimiento de cámara
-          if (!_followUserLocation)
-            Positioned(
-              right: 16,
-              bottom: 224,
-              child: FloatingActionButton.extended(
-                heroTag: 'driver_recenter',
-                onPressed: _recenterOnDriver,
-                icon: const Icon(Icons.my_location_rounded),
-                label: const Text('Mi ubicación'),
-              ),
-            ),
-
-          // Panel inferior grande y claro para operar con una mano
-          Positioned(
-            left: 12,
-            right: 12,
-            bottom: 12,
+          // Dock inferior dinámico: recenter + pedido entrante / viaje activo / interruptor en línea
+          Align(
+            alignment: Alignment.bottomCenter,
             child: SafeArea(
               top: false,
-              child: Card(
-                elevation: 4,
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  company != null
-                                      ? company.name
-                                      : 'Taxista independiente',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w800,
-                                    fontSize: 15,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (!_followUserLocation)
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: FloatingActionButton.extended(
+                            heroTag: 'driver_recenter',
+                            onPressed: _recenterOnDriver,
+                            icon: const Icon(Icons.my_location_rounded),
+                            label: const Text('Mi ubicación'),
+                          ),
+                        ),
+                      ),
+                    if (activeTrip != null)
+                      DriverActiveTripPanel(
+                        trip: activeTrip,
+                        passengerProfile: _passengerProfile,
+                        driverLocation: _latestGps ?? widget.details.currentLocation,
+                        pendingSyncCount: pendingMutationsCount,
+                        busy: _updatingTrip,
+                        onAdvanceStatus: (TripStatus nextStatus) =>
+                            _advanceTripStatus(activeTrip, nextStatus),
+                        onLongWaitChoiceWait: () => _advanceTripStatus(
+                          activeTrip,
+                          TripStatus.waitingReturn,
+                        ),
+                        onLongWaitChoiceRelease: () => _advanceTripStatus(
+                          activeTrip,
+                          TripStatus.completed,
+                          cancelReason: 'driver_released_wait',
+                        ),
+                        onOpenChat: () {
+                          showTaxiyaTripChatSheet(
+                            context: context,
+                            tripId: activeTrip.id,
+                            currentUserId: widget.profile.id,
+                            counterpartName:
+                                _passengerProfile?.fullName ?? 'Pasajero',
+                            counterpartPhone: _passengerProfile?.phone,
+                            quickReplies: const <String>[
+                              'Estoy afuera',
+                              'Estoy en la puerta',
+                              'Llego en 2 minutos',
+                              'Salgo para allá',
+                            ],
+                          );
+                        },
+                        onPanic: () => _handleDriverPanic(activeTrip),
+                        onCancel: () => _cancelActiveTrip(activeTrip),
+                      )
+                    else ...[
+                      if (incomingOrder != null) ...[
+                        DriverIncomingOrderCard(
+                          trip: incomingOrder,
+                          driverLocation:
+                              _latestGps ?? widget.details.currentLocation,
+                          hasPriorityReward: badges.any(
+                            (DriverBadge b) =>
+                                b.isActive &&
+                                (b.badgeCode?.grantsOrderPriority ?? false),
+                          ),
+                          accepting: _acceptingOrder,
+                          onAccept: () => _acceptIncomingOrder(incomingOrder),
+                          onDismiss: () async {
+                            await _stopIncomingOrderAlert();
+                            if (mounted) {
+                              setState(
+                                () => _dismissedOrderIds.add(incomingOrder.id),
+                              );
+                            }
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      Card(
+                        elevation: 4,
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          company != null
+                                              ? company.name
+                                              : 'Taxista independiente',
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.w800,
+                                            fontSize: 15,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '${widget.details.carBrand ?? ''} ${widget.details.carModel ?? ''} · ${widget.details.plateNumber ?? ''}'
+                                              .trim(),
+                                          style: TextStyle(
+                                            fontSize: 13,
+                                            color: colors.textSecondary,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  '${widget.details.carBrand ?? ''} ${widget.details.carModel ?? ''} · ${widget.details.plateNumber ?? ''}'
-                                      .trim(),
-                                  style: TextStyle(
-                                    fontSize: 13,
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: (isOnline
+                                              ? colors.success
+                                              : colors.textSecondary)
+                                          .withValues(alpha: 0.14),
+                                      borderRadius: BorderRadius.circular(20),
+                                    ),
+                                    child: Text(
+                                      isOnline ? 'EN LÍNEA' : 'FUERA DE LÍNEA',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w800,
+                                        color: isOnline
+                                            ? colors.success
+                                            : colors.textSecondary,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.gps_fixed_rounded,
+                                    size: 16,
                                     color: colors.textSecondary,
                                   ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color: (isOnline
-                                      ? colors.success
-                                      : colors.textSecondary)
-                                  .withValues(alpha: 0.14),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Text(
-                              isOnline ? 'EN LÍNEA' : 'FUERA DE LÍNEA',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w800,
-                                color: isOnline
-                                    ? colors.success
-                                    : colors.textSecondary,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Icon(
-                            Icons.gps_fixed_rounded,
-                            size: 16,
-                            color: colors.textSecondary,
-                          ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              isOnline
-                                  ? 'GPS cada 3 s · ${TaxiyaDateUtils.secondsSinceLabel(_lastSyncAt ?? widget.details.lastLocationAt)}'
-                                  : 'GPS pausado hasta que te conectes',
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: colors.textSecondary,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 14),
-                      SizedBox(
-                        height: 60,
-                        child: FilledButton.icon(
-                          style: FilledButton.styleFrom(
-                            backgroundColor: isOnline
-                                ? colors.success
-                                : scheme.primary,
-                            foregroundColor: isOnline
-                                ? Colors.white
-                                : scheme.onPrimary,
-                          ),
-                          onPressed: _togglingStatus ? null : _toggleOnline,
-                          icon: _togglingStatus
-                              ? const SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2.5,
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      isOnline
+                                          ? 'GPS cada 3 s · ${TaxiyaDateUtils.secondsSinceLabel(_lastSyncAt ?? widget.details.lastLocationAt)}'
+                                          : 'GPS pausado hasta que te conectes',
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: colors.textSecondary,
+                                      ),
+                                    ),
                                   ),
-                                )
-                              : Icon(
-                                  isOnline
-                                      ? Icons.power_settings_new_rounded
-                                      : Icons.play_arrow_rounded,
-                                  size: 28,
+                                ],
+                              ),
+                              const SizedBox(height: 14),
+                              SizedBox(
+                                height: 60,
+                                child: FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: isOnline
+                                        ? colors.success
+                                        : scheme.primary,
+                                    foregroundColor: isOnline
+                                        ? Colors.white
+                                        : scheme.onPrimary,
+                                  ),
+                                  onPressed:
+                                      _togglingStatus ? null : _toggleOnline,
+                                  icon: _togglingStatus
+                                      ? const SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2.5,
+                                          ),
+                                        )
+                                      : Icon(
+                                          isOnline
+                                              ? Icons.power_settings_new_rounded
+                                              : Icons.play_arrow_rounded,
+                                          size: 28,
+                                        ),
+                                  label: Text(
+                                    isOnline
+                                        ? 'En línea · Tocá para desconectarte'
+                                        : 'Fuera de línea · Tocá para conectarte',
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
                                 ),
-                          label: Text(
-                            isOnline
-                                ? 'En línea · Tocá para desconectarte'
-                                : 'Fuera de línea · Tocá para conectarte',
-                            style: const TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w800,
-                            ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
                     ],
-                  ),
+                  ],
                 ),
               ),
             ),

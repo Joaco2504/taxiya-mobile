@@ -457,3 +457,700 @@ DateTime? _parseDate(dynamic raw) {
   }
   return null;
 }
+
+/// Estado del ciclo de vida de un viaje en `taxiya.trips`.
+enum TripStatus {
+  searching('searching', 'Buscando taxi'),
+  requested('requested', 'Solicitado'),
+  accepted('accepted', 'Taxi asignado'),
+  arriving('arriving', 'En camino a buscarte'),
+  inDoor('in_door', 'Taxi en la puerta'),
+  inProgress('in_progress', 'Viaje en curso'),
+  waiting('waiting', 'En espera (ida y vuelta)'),
+  waitingReturn('waiting_return', 'En espera (ida y vuelta)'),
+  completed('completed', 'Viaje finalizado'),
+  cancelled('cancelled', 'Viaje cancelado');
+
+  const TripStatus(this.dbValue, this.labelAr);
+
+  final String dbValue;
+  final String labelAr;
+
+  static TripStatus fromString(String? raw) {
+    for (final value in TripStatus.values) {
+      if (value.dbValue == raw) return value;
+    }
+    return TripStatus.searching;
+  }
+
+  bool get isTerminal =>
+      this == TripStatus.completed || this == TripStatus.cancelled;
+
+  bool get isSearching =>
+      this == TripStatus.searching || this == TripStatus.requested;
+
+  bool get isWaitingState =>
+      this == TripStatus.waiting || this == TripStatus.waitingReturn;
+
+  bool get isDriverAssigned => !isSearching && !isTerminal;
+}
+
+/// Registro de traslado en `taxiya.trips`.
+class Trip {
+  const Trip({
+    required this.id,
+    required this.passengerId,
+    required this.driverId,
+    required this.localityId,
+    required this.status,
+    required this.originAddress,
+    required this.originPoint,
+    required this.destAddress,
+    required this.destPoint,
+    required this.isRoundTrip,
+    required this.waitMinutes,
+    required this.scheduledFor,
+    required this.cancelReason,
+    required this.cancelledBy,
+    required this.acceptedAt,
+    required this.startedAt,
+    required this.completedAt,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String passengerId;
+  final String? driverId;
+  final String? localityId;
+  final TripStatus status;
+  final String? originAddress;
+  final GeoPoint? originPoint;
+  final String? destAddress;
+  final GeoPoint? destPoint;
+  final bool isRoundTrip;
+  final int? waitMinutes;
+  final DateTime? scheduledFor;
+  final String? cancelReason;
+  final String? cancelledBy;
+  final DateTime? acceptedAt;
+  final DateTime? startedAt;
+  final DateTime? completedAt;
+  final DateTime? createdAt;
+
+  /// Determina si el traslado ocurrió o inició dentro del Turno Nocturno (00:00 a 06:00).
+  bool get isNightShiftTrip {
+    final ref = (startedAt ?? acceptedAt ?? createdAt)?.toLocal();
+    if (ref == null) return false;
+    return ref.hour >= 0 && ref.hour < 6;
+  }
+
+  /// El chat permite lectura y escritura durante el viaje y hasta 15 minutos después de finalizar o cancelar.
+  bool get isChatWritable {
+    if (!status.isTerminal) return true;
+    final ref = (completedAt ?? acceptedAt ?? createdAt)?.toLocal();
+    if (ref == null) return false;
+    return DateTime.now().difference(ref) <= const Duration(minutes: 15);
+  }
+
+  /// Tiempo restante (en minutos enteros hacia arriba) para que cierre el chat post-viaje.
+  int get remainingChatMinutes {
+    if (!status.isTerminal) return 15;
+    final ref = (completedAt ?? acceptedAt ?? createdAt)?.toLocal();
+    if (ref == null) return 0;
+    final left = const Duration(minutes: 15) - DateTime.now().difference(ref);
+    if (left.isNegative || left.inSeconds == 0) return 0;
+    return (left.inSeconds / 60).ceil();
+  }
+
+  /// Indica si una reserva programada todavía espera llegar a la ventana de despacho (30 min antes).
+  bool isScheduledStillDormant([DateTime? now]) {
+    final scheduled = scheduledFor?.toLocal();
+    if (scheduled == null) return false;
+    final current = now ?? DateTime.now();
+    return scheduled.difference(current) > const Duration(minutes: 30);
+  }
+
+  bool isReadyForDriverDispatch([DateTime? now]) {
+    final scheduled = scheduledFor?.toLocal();
+    if (scheduled == null) return true;
+    final current = now ?? DateTime.now();
+    return !current.isBefore(scheduled.subtract(const Duration(minutes: 30)));
+  }
+
+  factory Trip.fromJson(Map<String, dynamic> json) {
+    return Trip(
+      id: json['id'] as String,
+      passengerId: json['passenger_id'] as String,
+      driverId: json['driver_id'] as String?,
+      localityId: json['locality_id'] as String?,
+      status: TripStatus.fromString(json['status'] as String?),
+      originAddress: json['origin_address'] as String?,
+      originPoint: parsePostGisPoint(json['origin_point']),
+      destAddress: json['dest_address'] as String?,
+      destPoint: parsePostGisPoint(json['dest_point']),
+      isRoundTrip: (json['is_round_trip'] as bool?) ?? false,
+      waitMinutes: (json['wait_minutes'] as num?)?.toInt(),
+      scheduledFor: _parseDate(json['scheduled_for']),
+      cancelReason: json['cancel_reason'] as String?,
+      cancelledBy: json['cancelled_by'] as String?,
+      acceptedAt: _parseDate(json['accepted_at']),
+      startedAt: _parseDate(json['started_at']),
+      completedAt: _parseDate(json['completed_at']),
+      createdAt: _parseDate(json['created_at']),
+    );
+  }
+
+  Map<String, dynamic> toCacheJson() => {
+    'id': id,
+    'passenger_id': passengerId,
+    'driver_id': driverId,
+    'locality_id': localityId,
+    'status': status.dbValue,
+    'origin_address': originAddress,
+    'origin_point': originPoint == null
+        ? null
+        : {'lat': originPoint!.lat, 'lng': originPoint!.lng},
+    'dest_address': destAddress,
+    'dest_point': destPoint == null
+        ? null
+        : {'lat': destPoint!.lat, 'lng': destPoint!.lng},
+    'is_round_trip': isRoundTrip,
+    'wait_minutes': waitMinutes,
+    'scheduled_for': scheduledFor?.toIso8601String(),
+    'cancel_reason': cancelReason,
+    'cancelled_by': cancelledBy,
+    'accepted_at': acceptedAt?.toIso8601String(),
+    'started_at': startedAt?.toIso8601String(),
+    'completed_at': completedAt?.toIso8601String(),
+    'created_at': createdAt?.toIso8601String(),
+  };
+
+  Trip copyWith({
+    String? driverId,
+    bool clearDriverId = false,
+    TripStatus? status,
+    String? cancelReason,
+    String? cancelledBy,
+    DateTime? acceptedAt,
+    DateTime? startedAt,
+    DateTime? completedAt,
+  }) {
+    return Trip(
+      id: id,
+      passengerId: passengerId,
+      driverId: clearDriverId ? null : (driverId ?? this.driverId),
+      localityId: localityId,
+      status: status ?? this.status,
+      originAddress: originAddress,
+      originPoint: originPoint,
+      destAddress: destAddress,
+      destPoint: destPoint,
+      isRoundTrip: isRoundTrip,
+      waitMinutes: waitMinutes,
+      scheduledFor: scheduledFor,
+      cancelReason: cancelReason ?? this.cancelReason,
+      cancelledBy: cancelledBy ?? this.cancelledBy,
+      acceptedAt: acceptedAt ?? this.acceptedAt,
+      startedAt: startedAt ?? this.startedAt,
+      completedAt: completedAt ?? this.completedAt,
+      createdAt: createdAt,
+    );
+  }
+}
+
+/// Mensaje de chat dentro de un viaje (`taxiya.trip_messages`).
+class TripMessage {
+  const TripMessage({
+    required this.id,
+    required this.tripId,
+    required this.senderId,
+    required this.message,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String tripId;
+  final String senderId;
+  final String message;
+  final DateTime? createdAt;
+
+  factory TripMessage.fromJson(Map<String, dynamic> json) {
+    return TripMessage(
+      id: json['id'] as String,
+      tripId: json['trip_id'] as String,
+      senderId: json['sender_id'] as String,
+      message: (json['message'] as String?) ?? '',
+      createdAt: _parseDate(json['created_at']),
+    );
+  }
+
+  Map<String, dynamic> toCacheJson() => {
+    'id': id,
+    'trip_id': tripId,
+    'sender_id': senderId,
+    'message': message,
+    'created_at': createdAt?.toIso8601String(),
+  };
+}
+
+/// Calificación de 1 a 5 estrellas emitida por un pasajero (`taxiya.ratings`).
+class TripRating {
+  const TripRating({
+    required this.id,
+    required this.tripId,
+    required this.passengerId,
+    required this.driverId,
+    required this.stars,
+    required this.comment,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String tripId;
+  final String passengerId;
+  final String driverId;
+  final int stars;
+  final String? comment;
+  final DateTime? createdAt;
+
+  factory TripRating.fromJson(Map<String, dynamic> json) {
+    return TripRating(
+      id: json['id'] as String,
+      tripId: json['trip_id'] as String,
+      passengerId: json['passenger_id'] as String,
+      driverId: json['driver_id'] as String,
+      stars: (json['stars'] as num?)?.toInt() ?? 5,
+      comment: json['comment'] as String?,
+      createdAt: _parseDate(json['created_at']),
+    );
+  }
+
+  Map<String, dynamic> toCacheJson() => {
+    'id': id,
+    'trip_id': tripId,
+    'passenger_id': passengerId,
+    'driver_id': driverId,
+    'stars': stars,
+    'comment': comment,
+    'created_at': createdAt?.toIso8601String(),
+  };
+}
+
+/// Códigos oficiales de insignias del chofer en `taxiya.driver_badges`.
+enum DriverBadgeCode {
+  punctual(
+    code: 'punctual',
+    labelAr: 'Puntual',
+    descriptionAr: 'Completás viajes sin demoras al recoger al pasajero.',
+    rewardAr: 'Prioridad de 5 s al recibir pedidos nuevos',
+  ),
+  localFav(
+    code: 'local_fav',
+    labelAr: 'Favorito local',
+    descriptionAr: 'Calificación promedio igual o superior a 4,8 estrellas.',
+    rewardAr: 'Borde dorado en tu tarjeta del pasajero',
+  ),
+  impeccable(
+    code: 'impeccable',
+    labelAr: 'Sin cancelaciones',
+    descriptionAr: '10 viajes seguidos sin cancelar como chofer.',
+    rewardAr: 'Prioridad de 5 s al recibir pedidos nuevos',
+  ),
+  nightShift(
+    code: 'night_shift',
+    labelAr: 'Turno nocturno',
+    descriptionAr: '5 viajes o más en Turno Nocturno.',
+    rewardAr: 'Desbloquea estadísticas de demanda por zona',
+  ),
+  veteran(
+    code: 'veteran',
+    labelAr: 'Veterano de la zona',
+    descriptionAr: '20 viajes o más completados en tu localidad.',
+    rewardAr: 'Borde dorado en tu tarjeta del pasajero',
+  );
+
+  const DriverBadgeCode({
+    required this.code,
+    required this.labelAr,
+    required this.descriptionAr,
+    required this.rewardAr,
+  });
+
+  final String code;
+  final String labelAr;
+  final String descriptionAr;
+  final String rewardAr;
+
+  static DriverBadgeCode? fromString(String? raw) {
+    for (final value in DriverBadgeCode.values) {
+      if (value.code == raw) return value;
+    }
+    return null;
+  }
+
+  bool get grantsOrderPriority =>
+      this == DriverBadgeCode.punctual || this == DriverBadgeCode.impeccable;
+
+  bool get grantsGoldBorder =>
+      this == DriverBadgeCode.localFav || this == DriverBadgeCode.veteran;
+}
+
+/// Insignia obtenida por un chofer (`taxiya.driver_badges`).
+class DriverBadge {
+  const DriverBadge({
+    required this.id,
+    required this.driverId,
+    required this.rawCode,
+    required this.badgeCode,
+    required this.awardedAt,
+    required this.expiresAt,
+  });
+
+  final String id;
+  final String driverId;
+  final String rawCode;
+  final DriverBadgeCode? badgeCode;
+  final DateTime? awardedAt;
+  final DateTime? expiresAt;
+
+  bool get isActive {
+    if (expiresAt == null) return true;
+    return expiresAt!.toLocal().isAfter(DateTime.now());
+  }
+
+  String get displayLabel => badgeCode?.labelAr ?? rawCode;
+
+  factory DriverBadge.fromJson(Map<String, dynamic> json) {
+    final rawCode = (json['badge_code'] as String?) ?? 'punctual';
+    return DriverBadge(
+      id: (json['id'] as String?) ?? rawCode,
+      driverId: json['driver_id'] as String,
+      rawCode: rawCode,
+      badgeCode: DriverBadgeCode.fromString(rawCode),
+      awardedAt: _parseDate(json['awarded_at']),
+      expiresAt: _parseDate(json['expires_at']),
+    );
+  }
+
+  Map<String, dynamic> toCacheJson() => {
+    'id': id,
+    'driver_id': driverId,
+    'badge_code': rawCode,
+    'awarded_at': awardedAt?.toIso8601String(),
+    'expires_at': expiresAt?.toIso8601String(),
+  };
+}
+
+enum SupportTicketStatus {
+  open('open', 'Abierto'),
+  inReview('in_review', 'En revisión'),
+  inProgress('in_progress', 'En proceso'),
+  resolved('resolved', 'Resuelto'),
+  closed('closed', 'Cerrado');
+
+  const SupportTicketStatus(this.dbValue, this.labelAr);
+
+  final String dbValue;
+  final String labelAr;
+
+  static SupportTicketStatus fromString(String? raw) {
+    for (final value in SupportTicketStatus.values) {
+      if (value.dbValue == raw) return value;
+    }
+    return SupportTicketStatus.open;
+  }
+}
+
+/// Ticket de soporte o alerta de emergencia (`taxiya.support_tickets`).
+class SupportTicket {
+  const SupportTicket({
+    required this.id,
+    required this.userId,
+    required this.tripId,
+    required this.localityId,
+    required this.category,
+    required this.description,
+    required this.isEmergency,
+    required this.status,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String userId;
+  final String? tripId;
+  final String? localityId;
+  final String? category;
+  final String? description;
+  final bool isEmergency;
+  final SupportTicketStatus status;
+  final DateTime? createdAt;
+
+  factory SupportTicket.fromJson(Map<String, dynamic> json) {
+    return SupportTicket(
+      id: json['id'] as String,
+      userId: json['user_id'] as String,
+      tripId: json['trip_id'] as String?,
+      localityId: json['locality_id'] as String?,
+      category: json['category'] as String?,
+      description: json['description'] as String?,
+      isEmergency: (json['is_emergency'] as bool?) ?? false,
+      status: SupportTicketStatus.fromString(json['status'] as String?),
+      createdAt: _parseDate(json['created_at']),
+    );
+  }
+
+  Map<String, dynamic> toCacheJson() => {
+    'id': id,
+    'user_id': userId,
+    'trip_id': tripId,
+    'locality_id': localityId,
+    'category': category,
+    'description': description,
+    'is_emergency': isEmergency,
+    'status': status.dbValue,
+    'created_at': createdAt?.toIso8601String(),
+  };
+}
+
+/// Información pública del chofer asignado que se muestra en la tarjeta del pasajero.
+class DriverPublicSummary {
+  const DriverPublicSummary({
+    required this.driverId,
+    required this.fullName,
+    required this.phone,
+    required this.avatarUrl,
+    required this.companyName,
+    required this.companyBadgeColor,
+    required this.carBrand,
+    required this.carModel,
+    required this.carColor,
+    required this.carType,
+    required this.carPhotoUrl,
+    required this.plateNumber,
+    required this.municipalMobileNum,
+    required this.showPlatePublic,
+    required this.showPermitPublic,
+    required this.ratingAvg,
+    required this.totalTrips,
+    required this.currentLocation,
+    required this.lastLocationAt,
+    required this.activeBadges,
+  });
+
+  final String driverId;
+  final String? fullName;
+  final String? phone;
+  final String? avatarUrl;
+  final String? companyName;
+  final String? companyBadgeColor;
+  final String? carBrand;
+  final String? carModel;
+  final String? carColor;
+  final String? carType;
+  final String? carPhotoUrl;
+  final String? plateNumber;
+  final String? municipalMobileNum;
+  final bool showPlatePublic;
+  final bool showPermitPublic;
+  final double? ratingAvg;
+  final int totalTrips;
+  final GeoPoint? currentLocation;
+  final DateTime? lastLocationAt;
+  final List<DriverBadge> activeBadges;
+
+  bool get isGpsStale {
+    if (lastLocationAt == null) return true;
+    return DateTime.now().difference(lastLocationAt!.toLocal()).inSeconds > 15;
+  }
+
+  bool get hasGoldCardReward =>
+      activeBadges.any((b) => b.isActive && (b.badgeCode?.grantsGoldBorder ?? false));
+
+  String get displayName =>
+      (fullName != null && fullName!.trim().isNotEmpty)
+          ? fullName!.trim()
+          : 'Chofer habilitado';
+
+  String get vehicleDescription {
+    final parts = <String>[
+      if (carBrand != null && carBrand!.trim().isNotEmpty) carBrand!.trim(),
+      if (carModel != null && carModel!.trim().isNotEmpty) carModel!.trim(),
+      if (carColor != null && carColor!.trim().isNotEmpty) carColor!.trim(),
+    ];
+    return parts.isEmpty ? 'Taxi habilitado' : parts.join(' ');
+  }
+
+  String get visiblePlateLabel => showPlatePublic
+      ? (plateNumber?.trim().isNotEmpty == true
+            ? plateNumber!.trim().toUpperCase()
+            : 'No informada')
+      : 'Patente oculta por privacidad';
+
+  String get visiblePermitLabel {
+    if (!showPermitPublic) return 'Habilitación verificada (oculta)';
+    final mobile = municipalMobileNum?.trim();
+    if (mobile != null && mobile.isNotEmpty) {
+      return 'Móvil municipal $mobile (verificado)';
+    }
+    return 'Habilitación municipal verificada';
+  }
+}
+
+/// Período de filtro para la pantalla de rendimiento y gamificación del chofer.
+enum StatsPeriod {
+  day('Día'),
+  week('Semana'),
+  month('Mes');
+
+  const StatsPeriod(this.labelAr);
+  final String labelAr;
+}
+
+/// Resumen calculado de rendimiento, metas e insignias del chofer.
+class DriverStatsSnapshot {
+  const DriverStatsSnapshot({
+    required this.period,
+    required this.completedTrips,
+    required this.nightShiftTrips,
+    required this.onlineHours,
+    required this.averageRating,
+    required this.weeklyCompletedTrips,
+    required this.weeklyNightTrips,
+    required this.evaluatedTripsCount,
+    required this.noCancelStreak,
+    required this.earnedBadgeCodes,
+  });
+
+  final StatsPeriod period;
+  final int completedTrips;
+  final int nightShiftTrips;
+  final double onlineHours;
+  final double? averageRating;
+  final int weeklyCompletedTrips;
+  final int weeklyNightTrips;
+  final int evaluatedTripsCount;
+  final int noCancelStreak;
+  final Set<DriverBadgeCode> earnedBadgeCodes;
+
+  bool get hasOrderPriorityReward =>
+      earnedBadgeCodes.any((c) => c.grantsOrderPriority);
+
+  bool get hasGoldBorderReward =>
+      earnedBadgeCodes.any((c) => c.grantsGoldBorder);
+
+  bool get hasZoneStatsReward =>
+      earnedBadgeCodes.contains(DriverBadgeCode.nightShift);
+}
+
+/// Calcula métricas y progreso de metas locales a partir del historial de viajes y calificaciones.
+abstract final class DriverStatsCalculator {
+  static DriverStatsSnapshot compute({
+    required String driverId,
+    required StatsPeriod period,
+    required List<Trip> trips,
+    required List<TripRating> ratings,
+    required double onlineHoursInPeriod,
+    double? profileRatingAvg,
+    DateTime? now,
+  }) {
+    final current = (now ?? DateTime.now()).toLocal();
+    final periodStart = _startOfPeriod(current, period);
+    final weekStart = _startOfPeriod(current, StatsPeriod.week);
+
+    final completedAll = trips
+        .where((t) => t.status == TripStatus.completed)
+        .toList();
+
+    final inPeriod = completedAll.where((t) {
+      final ts = (t.completedAt ?? t.createdAt)?.toLocal();
+      return ts != null && !ts.isBefore(periodStart);
+    }).toList();
+
+    final inWeek = completedAll.where((t) {
+      final ts = (t.completedAt ?? t.createdAt)?.toLocal();
+      return ts != null && !ts.isBefore(weekStart);
+    }).toList();
+
+    // Calificaciones en el período o promedio general
+    final periodRatings = ratings.where((r) {
+      final ts = r.createdAt?.toLocal();
+      return ts != null && !ts.isBefore(periodStart);
+    }).toList();
+
+    double? avgRating;
+    if (periodRatings.isNotEmpty) {
+      avgRating =
+          periodRatings.fold<int>(0, (acc, r) => acc + r.stars) /
+          periodRatings.length;
+    } else if (ratings.isNotEmpty) {
+      avgRating =
+          ratings.fold<int>(0, (acc, r) => acc + r.stars) / ratings.length;
+    } else {
+      avgRating = profileRatingAvg;
+    }
+
+    // Racha sin cancelaciones del chofer ordenando del más reciente al más antiguo
+    final sortedByDate = List<Trip>.from(trips)
+      ..sort((a, b) {
+        final ta = (a.createdAt ?? a.acceptedAt ?? DateTime(2000)).toLocal();
+        final tb = (b.createdAt ?? b.acceptedAt ?? DateTime(2000)).toLocal();
+        return tb.compareTo(ta);
+      });
+
+    var streak = 0;
+    for (final trip in sortedByDate) {
+      if (trip.status == TripStatus.cancelled && trip.cancelledBy == driverId) {
+        break;
+      }
+      if (trip.status == TripStatus.completed) {
+        streak++;
+      }
+    }
+
+    final totalCompleted = completedAll.length;
+    final totalNightTrips = completedAll.where((t) => t.isNightShiftTrip).length;
+    final overallRating = ratings.isNotEmpty
+        ? ratings.fold<int>(0, (acc, r) => acc + r.stars) / ratings.length
+        : (profileRatingAvg ?? 0);
+
+    final earned = <DriverBadgeCode>{
+      if (streak >= 10) DriverBadgeCode.impeccable,
+      if (totalNightTrips >= 5) DriverBadgeCode.nightShift,
+      if (overallRating >= 4.8 &&
+          (ratings.length >= 15 || totalCompleted >= 15))
+        DriverBadgeCode.localFav,
+      if (totalCompleted >= 20) DriverBadgeCode.veteran,
+      if (inWeek.length >= 20 || (totalCompleted >= 5 && streak >= 5))
+        DriverBadgeCode.punctual,
+    };
+
+    return DriverStatsSnapshot(
+      period: period,
+      completedTrips: inPeriod.length,
+      nightShiftTrips: inPeriod.where((t) => t.isNightShiftTrip).length,
+      onlineHours: onlineHoursInPeriod,
+      averageRating: avgRating,
+      weeklyCompletedTrips: inWeek.length,
+      weeklyNightTrips: inWeek.where((t) => t.isNightShiftTrip).length,
+      evaluatedTripsCount:
+          ratings.isNotEmpty ? ratings.length : totalCompleted,
+      noCancelStreak: streak,
+      earnedBadgeCodes: earned,
+    );
+  }
+
+  static DateTime startOfPeriod(DateTime current, StatsPeriod period) =>
+      _startOfPeriod(current, period);
+
+  static DateTime _startOfPeriod(DateTime current, StatsPeriod period) {
+    final dayStart = DateTime(current.year, current.month, current.day);
+    switch (period) {
+      case StatsPeriod.day:
+        return dayStart;
+      case StatsPeriod.week:
+        return dayStart.subtract(Duration(days: current.weekday - 1));
+      case StatsPeriod.month:
+        return DateTime(current.year, current.month, 1);
+    }
+  }
+}

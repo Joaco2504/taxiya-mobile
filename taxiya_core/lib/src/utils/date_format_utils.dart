@@ -29,6 +29,11 @@ abstract final class TaxiyaDateUtils {
     return use24h ? '00:00 a 06:00 hs' : '12:00 AM a 06:00 AM';
   }
 
+  static String formatDateTimeAr(BuildContext context, DateTime? date) {
+    if (date == null) return 'Sin fecha';
+    return '${formatDateAr(date)} ${formatTime(context, date)}';
+  }
+
   static String secondsSinceLabel(DateTime? timestamp) {
     if (timestamp == null) return 'Sin señal GPS';
     final diff = DateTime.now().difference(timestamp.toLocal());

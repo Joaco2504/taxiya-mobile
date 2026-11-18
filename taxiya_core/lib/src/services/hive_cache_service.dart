@@ -129,4 +129,203 @@ class HiveCacheService {
   }
 
   Future<void> clearPendingGps() => _coreBox.delete('pending_gps');
+
+  // ---- Caché y cola offline de viajes (Fase 4) ----
+
+  Future<void> saveActiveTrip(Trip? trip) async {
+    if (trip == null || trip.status.isTerminal) {
+      await _coreBox.delete('active_trip');
+      return;
+    }
+    await _coreBox.put('active_trip', jsonEncode(trip.toCacheJson()));
+  }
+
+  Trip? loadActiveTrip() {
+    final raw = _coreBox.get('active_trip') as String?;
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      return Trip.fromJson(
+        Map<String, dynamic>.from(jsonDecode(raw) as Map),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> saveLastCompletedTrip(Trip trip) async {
+    await _coreBox.put('last_completed_trip', jsonEncode(trip.toCacheJson()));
+  }
+
+  Trip? loadLastCompletedTrip() {
+    final raw = _coreBox.get('last_completed_trip') as String?;
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      return Trip.fromJson(
+        Map<String, dynamic>.from(jsonDecode(raw) as Map),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> savePendingReturnBaseTrip(Trip? trip) async {
+    if (trip == null) {
+      await _coreBox.delete('pending_return_trip');
+      return;
+    }
+    await _coreBox.put('pending_return_trip', jsonEncode(trip.toCacheJson()));
+  }
+
+  Trip? loadPendingReturnBaseTrip() {
+    final raw = _coreBox.get('pending_return_trip') as String?;
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      return Trip.fromJson(
+        Map<String, dynamic>.from(jsonDecode(raw) as Map),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> enqueueTripMutation(Map<String, dynamic> mutation) async {
+    final items = loadPendingTripMutations();
+    items.add(mutation);
+    await _coreBox.put('pending_trip_mutations', jsonEncode(items));
+  }
+
+  List<Map<String, dynamic>> loadPendingTripMutations() {
+    final raw = _coreBox.get('pending_trip_mutations') as String?;
+    if (raw == null || raw.isEmpty) return <Map<String, dynamic>>[];
+    try {
+      final decoded = jsonDecode(raw) as List<dynamic>;
+      return decoded
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+    } catch (_) {
+      return <Map<String, dynamic>>[];
+    }
+  }
+
+  Future<void> replacePendingTripMutations(
+    List<Map<String, dynamic>> items,
+  ) async {
+    if (items.isEmpty) {
+      await _coreBox.delete('pending_trip_mutations');
+      return;
+    }
+    await _coreBox.put('pending_trip_mutations', jsonEncode(items));
+  }
+
+  Future<void> saveDriverBadges(String driverId, List<DriverBadge> badges) async {
+    final encoded = jsonEncode(badges.map((e) => e.toCacheJson()).toList());
+    await _coreBox.put('driver_badges_$driverId', encoded);
+  }
+
+  List<DriverBadge> loadDriverBadges(String driverId) {
+    final raw = _coreBox.get('driver_badges_$driverId') as String?;
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw) as List<dynamic>;
+      return decoded
+          .map((e) => DriverBadge.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> saveDriverTripsHistory(String driverId, List<Trip> trips) async {
+    final encoded = jsonEncode(trips.map((e) => e.toCacheJson()).toList());
+    await _coreBox.put('driver_trips_$driverId', encoded);
+  }
+
+  List<Trip> loadDriverTripsHistory(String driverId) {
+    final raw = _coreBox.get('driver_trips_$driverId') as String?;
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw) as List<dynamic>;
+      return decoded
+          .map((e) => Trip.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  // ---- Registro local de horas conectado del chofer ----
+
+  Future<void> recordOnlineSessionStart([DateTime? now]) async {
+    final ts = (now ?? DateTime.now()).toUtc().toIso8601String();
+    final current = _coreBox.get('driver_online_session_start') as String?;
+    if (current == null || current.isEmpty) {
+      await _coreBox.put('driver_online_session_start', ts);
+    }
+  }
+
+  Future<void> recordOnlineSessionStop([DateTime? now]) async {
+    final startRaw = _coreBox.get('driver_online_session_start') as String?;
+    await _coreBox.delete('driver_online_session_start');
+    if (startRaw == null || startRaw.isEmpty) return;
+    final start = DateTime.tryParse(startRaw);
+    if (start == null) return;
+    final end = (now ?? DateTime.now()).toUtc();
+    if (!end.isAfter(start)) return;
+
+    final sessions = _loadOnlineSessions();
+    sessions.add(<String, String>{
+      'start': start.toIso8601String(),
+      'end': end.toIso8601String(),
+    });
+    // Conservamos últimos 45 días para mantener liviano el almacenamiento local.
+    final cutoff = end.subtract(const Duration(days: 45));
+    final recent = sessions.where((item) {
+      final parsedEnd = DateTime.tryParse(item['end'] ?? '');
+      return parsedEnd == null || parsedEnd.isAfter(cutoff);
+    }).toList();
+    await _coreBox.put('driver_online_sessions', jsonEncode(recent));
+  }
+
+  double calculateOnlineHoursSince(DateTime since, [DateTime? now]) {
+    final sinceUtc = since.toUtc();
+    final currentUtc = (now ?? DateTime.now()).toUtc();
+    var totalSeconds = 0;
+
+    for (final item in _loadOnlineSessions()) {
+      final s = DateTime.tryParse(item['start'] ?? '');
+      final e = DateTime.tryParse(item['end'] ?? '');
+      if (s == null || e == null) continue;
+      final effectiveStart = s.isBefore(sinceUtc) ? sinceUtc : s;
+      if (e.isAfter(effectiveStart)) {
+        totalSeconds += e.difference(effectiveStart).inSeconds;
+      }
+    }
+
+    final activeStartRaw = _coreBox.get('driver_online_session_start') as String?;
+    if (activeStartRaw != null && activeStartRaw.isNotEmpty) {
+      final activeStart = DateTime.tryParse(activeStartRaw);
+      if (activeStart != null && currentUtc.isAfter(activeStart)) {
+        final effectiveStart =
+            activeStart.isBefore(sinceUtc) ? sinceUtc : activeStart;
+        if (currentUtc.isAfter(effectiveStart)) {
+          totalSeconds += currentUtc.difference(effectiveStart).inSeconds;
+        }
+      }
+    }
+
+    return totalSeconds / 3600.0;
+  }
+
+  List<Map<String, String>> _loadOnlineSessions() {
+    final raw = _coreBox.get('driver_online_sessions') as String?;
+    if (raw == null || raw.isEmpty) return <Map<String, String>>[];
+    try {
+      final decoded = jsonDecode(raw) as List<dynamic>;
+      return decoded
+          .map((e) => Map<String, String>.from(e as Map))
+          .toList();
+    } catch (_) {
+      return <Map<String, String>>[];
+    }
+  }
 }
