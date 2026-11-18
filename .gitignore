@@ -5,6 +5,8 @@
 /taxi-ya-78dd0-firebase-adminsdk-*.json
 /Mapbox tokens.txt
 /env.local.json
+/apk_pruebas/
+/APKs_Listos/
 **/android/gradle.properties
 *.env
 .env.*
