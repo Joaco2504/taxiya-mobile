@@ -139,13 +139,18 @@ class _PassengerHomeScreenState extends ConsumerState<PassengerHomeScreen> {
     _mapboxMap = map;
     _lastDarkStyle = Theme.of(context).brightness == Brightness.dark;
 
-    await map.location.updateSettings(
-      LocationComponentSettings(
-        enabled: true,
-        pulsingEnabled: true,
-        showAccuracyRing: true,
+    await Future.wait(<Future<void>>[
+      map.scaleBar.updateSettings(ScaleBarSettings(enabled: false)),
+      map.logo.updateSettings(LogoSettings(enabled: false)),
+      map.attribution.updateSettings(AttributionSettings(enabled: false)),
+      map.location.updateSettings(
+        LocationComponentSettings(
+          enabled: true,
+          pulsingEnabled: true,
+          showAccuracyRing: true,
+        ),
       ),
-    );
+    ]);
 
     _driverCircleManager = await map.annotations.createCircleAnnotationManager();
     _routeCircleManager = await map.annotations.createCircleAnnotationManager();

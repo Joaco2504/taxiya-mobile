@@ -736,50 +736,179 @@ class TripRating {
   };
 }
 
-/// Códigos oficiales de insignias del chofer en `taxiya.driver_badges`.
+/// Niveles evolutivos de las insignias de TaxiYa (Nivel 0 = sin insignia, 1 a 6 = Madera a Obsidiana).
+enum BadgeLevel {
+  none(
+    level: 0,
+    fileSuffix: '',
+    labelAr: 'Sin nivel',
+    colorHex: 0xFF64748B,
+    priorityAdvantageSeconds: 0,
+  ),
+  madera(
+    level: 1,
+    fileSuffix: '1_madera',
+    labelAr: 'Madera',
+    colorHex: 0xFF8B5A2B,
+    priorityAdvantageSeconds: 2,
+  ),
+  cobre(
+    level: 2,
+    fileSuffix: '2_cobre',
+    labelAr: 'Cobre',
+    colorHex: 0xFFB87333,
+    priorityAdvantageSeconds: 2,
+  ),
+  plata(
+    level: 3,
+    fileSuffix: '3_plata',
+    labelAr: 'Plata',
+    colorHex: 0xFF94A3B8,
+    priorityAdvantageSeconds: 5,
+  ),
+  oro(
+    level: 4,
+    fileSuffix: '4_oro',
+    labelAr: 'Oro',
+    colorHex: 0xFFF59E0B,
+    priorityAdvantageSeconds: 5,
+  ),
+  diamante(
+    level: 5,
+    fileSuffix: '5_diamante',
+    labelAr: 'Diamante',
+    colorHex: 0xFF38BDF8,
+    priorityAdvantageSeconds: 8,
+  ),
+  obsidiana(
+    level: 6,
+    fileSuffix: '6_obsidiana',
+    labelAr: 'Obsidiana',
+    colorHex: 0xFF312E81,
+    priorityAdvantageSeconds: 8,
+  );
+
+  const BadgeLevel({
+    required this.level,
+    required this.fileSuffix,
+    required this.labelAr,
+    required this.colorHex,
+    required this.priorityAdvantageSeconds,
+  });
+
+  final int level;
+  final String fileSuffix;
+  final String labelAr;
+  final int colorHex;
+  final int priorityAdvantageSeconds;
+
+  static const List<BadgeLevel> unlockableLevels = <BadgeLevel>[
+    madera,
+    cobre,
+    plata,
+    oro,
+    diamante,
+    obsidiana,
+  ];
+
+  static BadgeLevel fromLevelInt(int? raw) {
+    if (raw == null || raw <= 0) return BadgeLevel.none;
+    final clamped = raw.clamp(1, 6);
+    for (final value in unlockableLevels) {
+      if (value.level == clamped) return value;
+    }
+    return BadgeLevel.madera;
+  }
+
+  bool get isEarned => level >= 1;
+  bool get grantsVisiblePassengerBadge => level >= 1;
+  bool get grantsPassengerCardBorder => level >= 3;
+  bool get grantsSpecialBorder => level >= 5;
+  bool get grantsPremiumZoneStatsFor15Days => level >= 5;
+
+  String get rewardSummaryAr {
+    switch (this) {
+      case BadgeLevel.none:
+        return 'Alcanzá el primer objetivo para desbloquear Madera.';
+      case BadgeLevel.madera:
+      case BadgeLevel.cobre:
+        return 'Insignia visible al pasajero y +2 s de prioridad en pedidos cercanos.';
+      case BadgeLevel.plata:
+      case BadgeLevel.oro:
+        return 'Borde $labelAr en tu tarjeta del pasajero y +5 s de prioridad en pedidos.';
+      case BadgeLevel.diamante:
+      case BadgeLevel.obsidiana:
+        return 'Borde especial $labelAr, +8 s de prioridad y estadísticas por zona (Premium) por 15 días.';
+    }
+  }
+}
+
+/// Categorías oficiales de insignias progresivas del chofer en `taxiya.driver_badges`.
 enum DriverBadgeCode {
   punctual(
     code: 'punctual',
-    labelAr: 'Puntual',
-    descriptionAr: 'Completás viajes sin demoras al recoger al pasajero.',
-    rewardAr: 'Prioridad de 5 s al recibir pedidos nuevos',
+    filePrefix: 'puntual',
+    labelAr: 'Conductor Puntual',
+    unitAr: 'viajes puntuales',
+    descriptionAr: 'Viajes completados sin demoras ni cancelaciones al llegar al origen.',
+    defaultThresholds: <int>[5, 15, 35, 70, 120, 200],
   ),
   localFav(
     code: 'local_fav',
-    labelAr: 'Favorito local',
-    descriptionAr: 'Calificación promedio igual o superior a 4,8 estrellas.',
-    rewardAr: 'Borde dorado en tu tarjeta del pasajero',
+    filePrefix: 'favorito',
+    labelAr: 'Favorito del Pueblo',
+    unitAr: 'votos positivos (4-5 ★)',
+    descriptionAr: 'Calificaciones de 4 o 5 estrellas recibidas de pasajeros.',
+    defaultThresholds: <int>[3, 10, 25, 50, 100, 200],
   ),
   impeccable(
     code: 'impeccable',
-    labelAr: 'Sin cancelaciones',
-    descriptionAr: '10 viajes seguidos sin cancelar como chofer.',
-    rewardAr: 'Prioridad de 5 s al recibir pedidos nuevos',
+    filePrefix: 'impecable',
+    labelAr: 'Servicio Impecable',
+    unitAr: 'viajes sin cancelar',
+    descriptionAr: 'Racha de viajes completados sin cancelar desde tu cuenta de chofer.',
+    defaultThresholds: <int>[5, 15, 30, 60, 100, 180],
   ),
   nightShift(
     code: 'night_shift',
-    labelAr: 'Turno nocturno',
-    descriptionAr: '5 viajes o más en Turno Nocturno.',
-    rewardAr: 'Desbloquea estadísticas de demanda por zona',
+    filePrefix: 'nocturno',
+    labelAr: 'Turno Nocturno',
+    unitAr: 'viajes nocturnos',
+    descriptionAr: 'Viajes realizados entre las 00:00 y las 06:00 hs.',
+    defaultThresholds: <int>[3, 8, 20, 40, 75, 120],
   ),
   veteran(
     code: 'veteran',
-    labelAr: 'Veterano de la zona',
-    descriptionAr: '20 viajes o más completados en tu localidad.',
-    rewardAr: 'Borde dorado en tu tarjeta del pasajero',
+    filePrefix: 'veterano',
+    labelAr: 'Veterano Local',
+    unitAr: 'viajes completados',
+    descriptionAr: 'Historial total de viajes completados en tu localidad.',
+    defaultThresholds: <int>[10, 30, 75, 150, 300, 500],
   );
 
   const DriverBadgeCode({
     required this.code,
+    required this.filePrefix,
     required this.labelAr,
+    required this.unitAr,
     required this.descriptionAr,
-    required this.rewardAr,
+    required this.defaultThresholds,
   });
 
   final String code;
+  final String filePrefix;
   final String labelAr;
+  final String unitAr;
   final String descriptionAr;
-  final String rewardAr;
+  final List<int> defaultThresholds;
+
+  String assetFileName(BadgeLevel level) {
+    final target = level.isEarned ? level : BadgeLevel.madera;
+    return '${filePrefix}_${target.fileSuffix}.png';
+  }
+
+  String assetPath(BadgeLevel level) =>
+      'packages/taxiya_core/assets/badges/${assetFileName(level)}';
 
   static DriverBadgeCode? fromString(String? raw) {
     for (final value in DriverBadgeCode.values) {
@@ -787,12 +916,107 @@ enum DriverBadgeCode {
     }
     return null;
   }
+}
 
-  bool get grantsOrderPriority =>
-      this == DriverBadgeCode.punctual || this == DriverBadgeCode.impeccable;
+/// Configuración editable de metas por categoría y localidad (`taxiya.badge_configs`).
+class BadgeConfig {
+  const BadgeConfig({
+    required this.id,
+    required this.localityId,
+    required this.badgeCode,
+    required this.thresholds,
+    this.updatedAt,
+  });
 
-  bool get grantsGoldBorder =>
-      this == DriverBadgeCode.localFav || this == DriverBadgeCode.veteran;
+  final String id;
+  final String localityId;
+  final DriverBadgeCode badgeCode;
+  final List<int> thresholds; // 6 enteros [Madera..Obsidiana]
+  final DateTime? updatedAt;
+
+  BadgeLevel levelForCount(int value) {
+    var achieved = BadgeLevel.none;
+    for (var i = 0; i < BadgeLevel.unlockableLevels.length; i++) {
+      final threshold = i < thresholds.length
+          ? thresholds[i]
+          : badgeCode.defaultThresholds[i];
+      if (value >= threshold) {
+        achieved = BadgeLevel.unlockableLevels[i];
+      }
+    }
+    return achieved;
+  }
+
+  int thresholdFor(BadgeLevel lvl) {
+    if (!lvl.isEarned) return 0;
+    final idx = lvl.level - 1;
+    return idx < thresholds.length
+        ? thresholds[idx]
+        : badgeCode.defaultThresholds[idx];
+  }
+
+  int? nextThresholdFor(BadgeLevel current) {
+    if (current.level >= 6) return null;
+    final nextIdx = current.level; // 0 -> índice 0 (Madera), ..., 5 -> índice 5 (Obsidiana)
+    return nextIdx < thresholds.length
+        ? thresholds[nextIdx]
+        : badgeCode.defaultThresholds[nextIdx];
+  }
+
+  factory BadgeConfig.forDefault(
+    DriverBadgeCode code, {
+    String localityId = 'default',
+  }) {
+    return BadgeConfig(
+      id: 'default-${code.code}',
+      localityId: localityId,
+      badgeCode: code,
+      thresholds: List<int>.from(code.defaultThresholds),
+    );
+  }
+
+  static Map<DriverBadgeCode, BadgeConfig> defaultsMap({
+    String localityId = 'default',
+  }) {
+    return <DriverBadgeCode, BadgeConfig>{
+      for (final code in DriverBadgeCode.values)
+        code: BadgeConfig.forDefault(code, localityId: localityId),
+    };
+  }
+
+  factory BadgeConfig.fromJson(Map<String, dynamic> json) {
+    final code =
+        DriverBadgeCode.fromString(json['badge_code'] as String?) ??
+        DriverBadgeCode.punctual;
+    final rawList = json['thresholds'];
+    final parsed = <int>[];
+    if (rawList is List) {
+      for (final item in rawList) {
+        if (item is num) parsed.add(item.toInt());
+      }
+    }
+    final normalized = List<int>.generate(6, (int idx) {
+      final candidate = idx < parsed.length
+          ? parsed[idx]
+          : code.defaultThresholds[idx];
+      return candidate > 0 ? candidate : code.defaultThresholds[idx];
+    });
+    return BadgeConfig(
+      id: (json['id'] as String?) ?? 'cfg-${code.code}',
+      localityId: (json['locality_id'] as String?) ?? '',
+      badgeCode: code,
+      thresholds: normalized,
+      updatedAt: _parseDate(json['updated_at']),
+    );
+  }
+
+  Map<String, dynamic> toCacheJson() => <String, dynamic>{
+    'id': id,
+    'locality_id': localityId,
+    'badge_code': badgeCode.code,
+    'thresholds': thresholds,
+    'updated_at': updatedAt?.toIso8601String(),
+  };
 }
 
 /// Insignia obtenida por un chofer (`taxiya.driver_badges`).
@@ -802,6 +1026,7 @@ class DriverBadge {
     required this.driverId,
     required this.rawCode,
     required this.badgeCode,
+    required this.level,
     required this.awardedAt,
     required this.expiresAt,
   });
@@ -810,23 +1035,34 @@ class DriverBadge {
   final String driverId;
   final String rawCode;
   final DriverBadgeCode? badgeCode;
+  final BadgeLevel level;
   final DateTime? awardedAt;
   final DateTime? expiresAt;
 
   bool get isActive {
+    if (!level.isEarned) return false;
     if (expiresAt == null) return true;
     return expiresAt!.toLocal().isAfter(DateTime.now());
   }
 
   String get displayLabel => badgeCode?.labelAr ?? rawCode;
 
+  String get fullLabelAr => level.isEarned
+      ? '$displayLabel · Nivel ${level.labelAr}'
+      : displayLabel;
+
+  String? get assetPath =>
+      badgeCode != null && level.isEarned ? badgeCode!.assetPath(level) : null;
+
   factory DriverBadge.fromJson(Map<String, dynamic> json) {
     final rawCode = (json['badge_code'] as String?) ?? 'punctual';
+    final levelInt = (json['level'] as num?)?.toInt() ?? 1;
     return DriverBadge(
       id: (json['id'] as String?) ?? rawCode,
       driverId: json['driver_id'] as String,
       rawCode: rawCode,
       badgeCode: DriverBadgeCode.fromString(rawCode),
+      level: BadgeLevel.fromLevelInt(levelInt),
       awardedAt: _parseDate(json['awarded_at']),
       expiresAt: _parseDate(json['expires_at']),
     );
@@ -836,9 +1072,50 @@ class DriverBadge {
     'id': id,
     'driver_id': driverId,
     'badge_code': rawCode,
+    'level': level.level,
     'awarded_at': awardedAt?.toIso8601String(),
     'expires_at': expiresAt?.toIso8601String(),
   };
+}
+
+/// Evento emitido cuando un chofer sube a un nivel superior en una categoría.
+class DriverBadgeLevelUpEvent {
+  const DriverBadgeLevelUpEvent({
+    required this.badgeCode,
+    required this.previousLevel,
+    required this.newLevel,
+  });
+
+  final DriverBadgeCode badgeCode;
+  final BadgeLevel previousLevel;
+  final BadgeLevel newLevel;
+}
+
+/// Progreso actual de un chofer en una categoría específica hacia los 6 niveles.
+class DriverBadgeProgress {
+  const DriverBadgeProgress({
+    required this.badgeCode,
+    required this.currentCount,
+    required this.currentLevel,
+    required this.thresholds,
+    required this.nextTargetCount,
+  });
+
+  final DriverBadgeCode badgeCode;
+  final int currentCount;
+  final BadgeLevel currentLevel;
+  final List<int> thresholds;
+  final int? nextTargetCount;
+
+  double get progressFraction {
+    if (nextTargetCount == null) return 1.0;
+    final prevTarget = currentLevel.level >= 2
+        ? thresholds[currentLevel.level - 2]
+        : 0;
+    final span = nextTargetCount! - prevTarget;
+    if (span <= 0) return 1.0;
+    return ((currentCount - prevTarget) / span).clamp(0.0, 1.0);
+  }
 }
 
 enum SupportTicketStatus {
@@ -963,8 +1240,21 @@ class DriverPublicSummary {
     return DateTime.now().difference(lastLocationAt!.toLocal()).inSeconds > 15;
   }
 
-  bool get hasGoldCardReward =>
-      activeBadges.any((b) => b.isActive && (b.badgeCode?.grantsGoldBorder ?? false));
+  BadgeLevel get highestBorderLevel {
+    var best = BadgeLevel.none;
+    for (final badge in activeBadges) {
+      if (badge.isActive &&
+          badge.level.grantsPassengerCardBorder &&
+          badge.level.level > best.level) {
+        best = badge.level;
+      }
+    }
+    return best;
+  }
+
+  bool get hasHighlightedBorder => highestBorderLevel.grantsPassengerCardBorder;
+
+  bool get hasGoldCardReward => hasHighlightedBorder;
 
   String get displayName =>
       (fullName != null && fullName!.trim().isNotEmpty)
@@ -1006,7 +1296,7 @@ enum StatsPeriod {
   final String labelAr;
 }
 
-/// Resumen calculado de rendimiento, metas e insignias del chofer.
+/// Resumen calculado de rendimiento, metas progresivas (6 niveles) e insignias del chofer.
 class DriverStatsSnapshot {
   const DriverStatsSnapshot({
     required this.period,
@@ -1017,8 +1307,9 @@ class DriverStatsSnapshot {
     required this.weeklyCompletedTrips,
     required this.weeklyNightTrips,
     required this.evaluatedTripsCount,
+    required this.positiveRatingsCount,
     required this.noCancelStreak,
-    required this.earnedBadgeCodes,
+    required this.badgeProgress,
   });
 
   final StatsPeriod period;
@@ -1029,20 +1320,38 @@ class DriverStatsSnapshot {
   final int weeklyCompletedTrips;
   final int weeklyNightTrips;
   final int evaluatedTripsCount;
+  final int positiveRatingsCount;
   final int noCancelStreak;
-  final Set<DriverBadgeCode> earnedBadgeCodes;
+  final Map<DriverBadgeCode, DriverBadgeProgress> badgeProgress;
 
-  bool get hasOrderPriorityReward =>
-      earnedBadgeCodes.any((c) => c.grantsOrderPriority);
+  Set<DriverBadgeCode> get earnedBadgeCodes => <DriverBadgeCode>{
+    for (final entry in badgeProgress.entries)
+      if (entry.value.currentLevel.isEarned) entry.key,
+  };
 
-  bool get hasGoldBorderReward =>
-      earnedBadgeCodes.any((c) => c.grantsGoldBorder);
+  BadgeLevel get highestBadgeLevel {
+    var best = BadgeLevel.none;
+    for (final p in badgeProgress.values) {
+      if (p.currentLevel.level > best.level) {
+        best = p.currentLevel;
+      }
+    }
+    return best;
+  }
 
-  bool get hasZoneStatsReward =>
-      earnedBadgeCodes.contains(DriverBadgeCode.nightShift);
+  int get maxPriorityAdvantageSeconds => highestBadgeLevel.priorityAdvantageSeconds;
+
+  /// Espera aplicada frente a choferes de nivel máximo (+8 s = 0 s, +5 s = 3 s, +2 s = 6 s, Nivel 0 = 8 s).
+  int get orderHoldDelaySeconds => (8 - maxPriorityAdvantageSeconds).clamp(0, 8);
+
+  bool get hasOrderPriorityReward => maxPriorityAdvantageSeconds > 0;
+
+  bool get hasGoldBorderReward => highestBadgeLevel.grantsPassengerCardBorder;
+
+  bool get hasZoneStatsReward => highestBadgeLevel.grantsPremiumZoneStatsFor15Days;
 }
 
-/// Calcula métricas y progreso de metas locales a partir del historial de viajes y calificaciones.
+/// Calcula métricas y progreso de metas locales a partir del historial de viajes, votos y configuración.
 abstract final class DriverStatsCalculator {
   static DriverStatsSnapshot compute({
     required String driverId,
@@ -1050,6 +1359,7 @@ abstract final class DriverStatsCalculator {
     required List<Trip> trips,
     required List<TripRating> ratings,
     required double onlineHoursInPeriod,
+    Map<DriverBadgeCode, BadgeConfig>? badgeConfigs,
     double? profileRatingAvg,
     DateTime? now,
   }) {
@@ -1071,7 +1381,6 @@ abstract final class DriverStatsCalculator {
       return ts != null && !ts.isBefore(weekStart);
     }).toList();
 
-    // Calificaciones en el período o promedio general
     final periodRatings = ratings.where((r) {
       final ts = r.createdAt?.toLocal();
       return ts != null && !ts.isBefore(periodStart);
@@ -1109,20 +1418,39 @@ abstract final class DriverStatsCalculator {
 
     final totalCompleted = completedAll.length;
     final totalNightTrips = completedAll.where((t) => t.isNightShiftTrip).length;
-    final overallRating = ratings.isNotEmpty
-        ? ratings.fold<int>(0, (acc, r) => acc + r.stars) / ratings.length
-        : (profileRatingAvg ?? 0);
+    final positiveRatingsCount = ratings.where((r) => r.stars >= 4).length;
 
-    final earned = <DriverBadgeCode>{
-      if (streak >= 10) DriverBadgeCode.impeccable,
-      if (totalNightTrips >= 5) DriverBadgeCode.nightShift,
-      if (overallRating >= 4.8 &&
-          (ratings.length >= 15 || totalCompleted >= 15))
-        DriverBadgeCode.localFav,
-      if (totalCompleted >= 20) DriverBadgeCode.veteran,
-      if (inWeek.length >= 20 || (totalCompleted >= 5 && streak >= 5))
-        DriverBadgeCode.punctual,
+    // Viajes puntuales: aceptados y completados (o tiempo hasta inicio <= 12 min si hay timestamps).
+    final punctualTripsCount = completedAll.where((Trip t) {
+      if (t.acceptedAt != null && t.startedAt != null) {
+        final diffMin = t.startedAt!.difference(t.acceptedAt!).inMinutes;
+        return diffMin <= 12;
+      }
+      return true;
+    }).length;
+
+    final metricsByCode = <DriverBadgeCode, int>{
+      DriverBadgeCode.punctual: punctualTripsCount,
+      DriverBadgeCode.localFav: positiveRatingsCount,
+      DriverBadgeCode.impeccable: streak,
+      DriverBadgeCode.nightShift: totalNightTrips,
+      DriverBadgeCode.veteran: totalCompleted,
     };
+
+    final cfgMap = badgeConfigs ?? BadgeConfig.defaultsMap();
+    final badgeProgress = <DriverBadgeCode, DriverBadgeProgress>{};
+    for (final code in DriverBadgeCode.values) {
+      final cfg = cfgMap[code] ?? BadgeConfig.forDefault(code);
+      final count = metricsByCode[code] ?? 0;
+      final level = cfg.levelForCount(count);
+      badgeProgress[code] = DriverBadgeProgress(
+        badgeCode: code,
+        currentCount: count,
+        currentLevel: level,
+        thresholds: cfg.thresholds,
+        nextTargetCount: cfg.nextThresholdFor(level),
+      );
+    }
 
     return DriverStatsSnapshot(
       period: period,
@@ -1134,8 +1462,9 @@ abstract final class DriverStatsCalculator {
       weeklyNightTrips: inWeek.where((t) => t.isNightShiftTrip).length,
       evaluatedTripsCount:
           ratings.isNotEmpty ? ratings.length : totalCompleted,
+      positiveRatingsCount: positiveRatingsCount,
       noCancelStreak: streak,
-      earnedBadgeCodes: earned,
+      badgeProgress: badgeProgress,
     );
   }
 

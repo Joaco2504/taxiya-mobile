@@ -958,7 +958,38 @@ class TaxiyaRepository {
     return TripRating.fromJson(Map<String, dynamic>.from(row));
   }
 
-  // ---- Insignias y Rendimiento del Chofer ----
+  // ---- Insignias Progresivas y Rendimiento del Chofer ----
+
+  /// Carga los requisitos numéricos de las 5 categorías para la localidad, con respaldo offline y valores por defecto.
+  Future<Map<DriverBadgeCode, BadgeConfig>> fetchBadgeConfigs(
+    String? localityId,
+  ) async {
+    final key = (localityId != null && localityId.isNotEmpty)
+        ? localityId
+        : 'default';
+    final defaults = BadgeConfig.defaultsMap(localityId: key);
+    if (localityId == null || localityId.isEmpty) return defaults;
+
+    try {
+      final rows = await _client
+          .from('badge_configs')
+          .select()
+          .eq('locality_id', localityId);
+      final parsed = (rows as List<dynamic>)
+          .map((e) => BadgeConfig.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList();
+      await _cache.saveBadgeConfigs(localityId, parsed);
+      for (final cfg in parsed) {
+        defaults[cfg.badgeCode] = cfg;
+      }
+      return defaults;
+    } catch (_) {
+      for (final cfg in _cache.loadBadgeConfigs(localityId)) {
+        defaults[cfg.badgeCode] = cfg;
+      }
+      return defaults;
+    }
+  }
 
   Future<List<DriverBadge>> fetchDriverBadges(String driverId) async {
     try {
@@ -966,42 +997,141 @@ class TaxiyaRepository {
           .from('driver_badges')
           .select()
           .eq('driver_id', driverId)
-          .order('awarded_at', ascending: false);
-      final items = (rows as List<dynamic>)
+          .order('level', ascending: false);
+      final rawItems = (rows as List<dynamic>)
           .map((e) => DriverBadge.fromJson(Map<String, dynamic>.from(e as Map)))
           .toList();
-      await _cache.saveDriverBadges(driverId, items);
-      return items;
+      // Conservamos el nivel más alto activo por categoría para que reemplace al nivel anterior.
+      final dedup = <String, DriverBadge>{};
+      for (final badge in rawItems) {
+        final prev = dedup[badge.rawCode];
+        if (prev == null || badge.level.level > prev.level.level) {
+          dedup[badge.rawCode] = badge;
+        }
+      }
+      final result = dedup.values.toList();
+      await _cache.saveDriverBadges(driverId, result);
+      return result;
     } catch (_) {
       return _cache.loadDriverBadges(driverId);
     }
   }
 
-  Future<List<DriverBadge>> syncEarnedDriverBadges({
+  /// Sincroniza el nivel progresivo alcanzado por el chofer en `taxiya.driver_badges` y detecta ascensos de nivel.
+  Future<({List<DriverBadge> badges, List<DriverBadgeLevelUpEvent> levelUps})>
+  syncProgressiveDriverBadges({
     required String driverId,
-    required Set<DriverBadgeCode> earnedCodes,
+    required Map<DriverBadgeCode, DriverBadgeProgress> progressByCode,
   }) async {
     final existing = await fetchDriverBadges(driverId);
-    final activeCodes = existing
-        .where((b) => b.isActive && b.badgeCode != null)
-        .map((b) => b.badgeCode!)
-        .toSet();
-    final missing = earnedCodes.difference(activeCodes);
-    if (missing.isEmpty) return existing;
+    final existingByCode = <DriverBadgeCode, DriverBadge>{
+      for (final b in existing)
+        if (b.badgeCode != null) b.badgeCode!: b,
+    };
 
-    final now = DateTime.now().toUtc();
-    final expiresAt = now.add(const Duration(days: 14)).toIso8601String();
-    for (final code in missing) {
-      try {
-        await _client.from('driver_badges').insert(<String, dynamic>{
-          'driver_id': driverId,
-          'badge_code': code.code,
-          'awarded_at': now.toIso8601String(),
-          'expires_at': expiresAt,
-        });
-      } catch (_) {}
+    final knownLevels = _cache.loadKnownBadgeLevels(driverId);
+    // Si es la primera instalación en este teléfono, sembramos con el nivel ya guardado en BD
+    // para evitar notificaciones repetidas de niveles ganados anteriormente.
+    final isFirstLocalSeed = knownLevels.isEmpty && existingByCode.isNotEmpty;
+    if (isFirstLocalSeed) {
+      for (final entry in existingByCode.entries) {
+        knownLevels[entry.key.code] = entry.value.level.level;
+      }
     }
-    return fetchDriverBadges(driverId);
+
+    final levelUps = <DriverBadgeLevelUpEvent>[];
+    final now = DateTime.now().toUtc();
+    var touchedDb = false;
+
+    for (final entry in progressByCode.entries) {
+      final code = entry.key;
+      final achieved = entry.value.currentLevel;
+      if (!achieved.isEarned) continue;
+
+      final currentDb = existingByCode[code];
+      final expiresAt = now
+          .add(
+            Duration(
+              days: achieved.grantsPremiumZoneStatsFor15Days ? 15 : 30,
+            ),
+          )
+          .toIso8601String();
+
+      if (currentDb == null) {
+        try {
+          await _client.from('driver_badges').insert(<String, dynamic>{
+            'driver_id': driverId,
+            'badge_code': code.code,
+            'level': achieved.level,
+            'awarded_at': now.toIso8601String(),
+            'expires_at': expiresAt,
+          });
+          touchedDb = true;
+        } catch (_) {}
+      } else if (currentDb.level.level < achieved.level || !currentDb.isActive) {
+        try {
+          await _client
+              .from('driver_badges')
+              .update(<String, dynamic>{
+                'level': achieved.level,
+                'awarded_at': now.toIso8601String(),
+                'expires_at': expiresAt,
+              })
+              .eq('id', currentDb.id);
+          touchedDb = true;
+        } catch (_) {}
+      }
+
+      final prevKnown = knownLevels[code.code] ?? (currentDb?.level.level ?? 0);
+      if (achieved.level > prevKnown) {
+        levelUps.add(
+          DriverBadgeLevelUpEvent(
+            badgeCode: code,
+            previousLevel: BadgeLevel.fromLevelInt(prevKnown),
+            newLevel: achieved,
+          ),
+        );
+      }
+      if (achieved.level >= prevKnown) {
+        knownLevels[code.code] = achieved.level;
+      }
+    }
+
+    await _cache.saveKnownBadgeLevels(driverId, knownLevels);
+    final updatedBadges = touchedDb ? await fetchDriverBadges(driverId) : existing;
+
+    // Si las políticas RLS restringen escritura directa en `driver_badges`, reflejamos igual el progreso local.
+    final fallbackMerged = <DriverBadge>[...updatedBadges];
+    for (final entry in progressByCode.entries) {
+      final achieved = entry.value.currentLevel;
+      if (!achieved.isEarned) continue;
+      final idx = fallbackMerged.indexWhere((b) => b.badgeCode == entry.key);
+      if (idx == -1) {
+        fallbackMerged.add(
+          DriverBadge(
+            id: 'local-${entry.key.code}',
+            driverId: driverId,
+            rawCode: entry.key.code,
+            badgeCode: entry.key,
+            level: achieved,
+            awardedAt: now,
+            expiresAt: now.add(const Duration(days: 15)),
+          ),
+        );
+      } else if (fallbackMerged[idx].level.level < achieved.level) {
+        fallbackMerged[idx] = DriverBadge(
+          id: fallbackMerged[idx].id,
+          driverId: driverId,
+          rawCode: entry.key.code,
+          badgeCode: entry.key,
+          level: achieved,
+          awardedAt: now,
+          expiresAt: fallbackMerged[idx].expiresAt,
+        );
+      }
+    }
+    await _cache.saveDriverBadges(driverId, fallbackMerged);
+    return (badges: fallbackMerged, levelUps: levelUps);
   }
 
   Future<List<Trip>> fetchDriverTripsHistory(String driverId) async {

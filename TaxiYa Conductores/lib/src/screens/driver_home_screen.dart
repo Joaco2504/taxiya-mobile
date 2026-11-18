@@ -357,13 +357,18 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       ..add(map.gestures.rotate.gestureEvents.listen(_onUserMapGesture))
       ..add(map.gestures.pitch.gestureEvents.listen(_onUserMapGesture));
 
-    await map.location.updateSettings(
-      LocationComponentSettings(
-        enabled: true,
-        pulsingEnabled: true,
-        showAccuracyRing: true,
+    await Future.wait(<Future<void>>[
+      map.scaleBar.updateSettings(ScaleBarSettings(enabled: false)),
+      map.logo.updateSettings(LogoSettings(enabled: false)),
+      map.attribution.updateSettings(AttributionSettings(enabled: false)),
+      map.location.updateSettings(
+        LocationComponentSettings(
+          enabled: true,
+          pulsingEnabled: true,
+          showAccuracyRing: true,
+        ),
       ),
-    );
+    ]);
 
     _selfMarkerManager = await map.annotations.createCircleAnnotationManager();
     final markerPoint = _latestGps ?? _initialCameraCenter;
@@ -445,24 +450,33 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
     await _sound.stopOrderRing();
   }
 
+  int _maxPrioritySeconds(List<DriverBadge> badges) {
+    var best = 0;
+    for (final b in badges) {
+      if (b.isActive && b.level.priorityAdvantageSeconds > best) {
+        best = b.level.priorityAdvantageSeconds;
+      }
+    }
+    return best;
+  }
+
   Trip? _selectEligibleIncomingOrder(
     List<Trip> searchingTrips,
     List<DriverBadge> badges,
   ) {
     if (!widget.details.isOnline) return null;
-    final hasPriority = badges.any(
-      (DriverBadge b) => b.isActive && (b.badgeCode?.grantsOrderPriority ?? false),
-    );
+    final prioritySec = _maxPrioritySeconds(badges);
+    final holdSeconds = (8 - prioritySec).clamp(0, 8);
     final now = DateTime.now();
 
     for (final trip in searchingTrips) {
       if (_dismissedOrderIds.contains(trip.id)) continue;
       if (!trip.isReadyForDriverDispatch(now)) continue;
 
-      // Recompensa de 5 segundos de ventaja para choferes con insignias activas.
-      if (!hasPriority && trip.createdAt != null) {
+      // Escala de prioridad por nivel: Nivel 5-6 (+8s -> 0s espera), 3-4 (+5s -> 3s), 1-2 (+2s -> 6s), 0 (8s).
+      if (holdSeconds > 0 && trip.createdAt != null) {
         final ageSec = now.difference(trip.createdAt!.toLocal()).inSeconds;
-        if (ageSec < 5) continue;
+        if (ageSec < holdSeconds) continue;
       }
       return trip;
     }
@@ -677,6 +691,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       final repo = ref.read(taxiyaRepositoryProvider);
       final trips = await repo.fetchDriverTripsHistory(widget.profile.id);
       final ratings = await repo.fetchDriverRatings(widget.profile.id);
+      final badgeConfigs =
+          await repo.fetchBadgeConfigs(widget.profile.localityId);
       final weekStart = DriverStatsCalculator.startOfPeriod(
         DateTime.now(),
         StatsPeriod.week,
@@ -690,14 +706,30 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
         trips: trips,
         ratings: ratings,
         onlineHoursInPeriod: weekHours,
+        badgeConfigs: badgeConfigs,
         profileRatingAvg: widget.details.ratingAvg,
       );
-      if (stats.earnedBadgeCodes.isNotEmpty) {
-        await repo.syncEarnedDriverBadges(
-          driverId: widget.profile.id,
-          earnedCodes: stats.earnedBadgeCodes,
-        );
-        ref.invalidate(driverBadgesProvider);
+      final res = await repo.syncProgressiveDriverBadges(
+        driverId: widget.profile.id,
+        progressByCode: stats.badgeProgress,
+      );
+      ref.invalidate(driverBadgesProvider);
+
+      if (res.levelUps.isNotEmpty) {
+        final first = res.levelUps.first;
+        final title = 'Subiste a nivel ${first.newLevel.labelAr}';
+        final body =
+            'Desbloqueaste ${first.badgeCode.labelAr} (${first.newLevel.labelAr}). ${first.newLevel.rewardSummaryAr}';
+        unawaited(_sound.playChime());
+        unawaited(_showLocalAlert(id: 9105, title: title, body: body));
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              duration: const Duration(seconds: 6),
+              content: Text('$title — ${first.badgeCode.labelAr}'),
+            ),
+          );
+        }
       }
     } catch (_) {}
   }
@@ -1070,11 +1102,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
                           trip: incomingOrder,
                           driverLocation:
                               _latestGps ?? widget.details.currentLocation,
-                          hasPriorityReward: badges.any(
-                            (DriverBadge b) =>
-                                b.isActive &&
-                                (b.badgeCode?.grantsOrderPriority ?? false),
-                          ),
+                          prioritySeconds: _maxPrioritySeconds(badges),
                           accepting: _acceptingOrder,
                           onAccept: () => _acceptIncomingOrder(incomingOrder),
                           onDismiss: () async {

@@ -6,6 +6,7 @@ import '../providers/core_providers.dart';
 import '../theme/taxiya_theme.dart';
 import '../utils/date_format_utils.dart';
 import '../utils/taxiya_external_launcher.dart';
+import 'taxiya_selector_field.dart';
 
 /// Tarjeta ilustrada de la guía rápida de uso (4 pasos por rol).
 class TaxiyaHelpGuideCardData {
@@ -345,17 +346,16 @@ class _TaxiyaHelpGuideScreenState extends ConsumerState<TaxiyaHelpGuideScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
-                    initialValue: _selectedCategory,
-                    decoration: const InputDecoration(
-                      labelText: 'Motivo',
-                      isDense: true,
-                    ),
-                    items: widget.ticketCategories
+                  TaxiyaSelectorField<String>(
+                    label: 'Motivo',
+                    sheetTitle: 'Elegí el motivo de tu reporte',
+                    prefixIcon: Icons.label_outline_rounded,
+                    value: _selectedCategory,
+                    options: widget.ticketCategories
                         .map(
-                          (String c) => DropdownMenuItem<String>(
+                          (String c) => TaxiyaSelectorOption<String>(
                             value: c,
-                            child: Text(c),
+                            label: c,
                           ),
                         )
                         .toList(),

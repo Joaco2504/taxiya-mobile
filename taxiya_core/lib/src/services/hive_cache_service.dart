@@ -328,4 +328,47 @@ class HiveCacheService {
       return <Map<String, String>>[];
     }
   }
+
+  // ---- Configuración de metas (badge_configs) y niveles conocidos por categoría ----
+
+  Future<void> saveBadgeConfigs(
+    String localityId,
+    List<BadgeConfig> configs,
+  ) async {
+    final encoded = jsonEncode(configs.map((e) => e.toCacheJson()).toList());
+    await _coreBox.put('badge_configs_$localityId', encoded);
+  }
+
+  List<BadgeConfig> loadBadgeConfigs(String localityId) {
+    final raw = _coreBox.get('badge_configs_$localityId') as String?;
+    if (raw == null || raw.isEmpty) return const <BadgeConfig>[];
+    try {
+      final decoded = jsonDecode(raw) as List<dynamic>;
+      return decoded
+          .map((e) => BadgeConfig.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList();
+    } catch (_) {
+      return const <BadgeConfig>[];
+    }
+  }
+
+  Future<void> saveKnownBadgeLevels(
+    String driverId,
+    Map<String, int> levels,
+  ) async {
+    await _coreBox.put('known_badge_levels_$driverId', jsonEncode(levels));
+  }
+
+  Map<String, int> loadKnownBadgeLevels(String driverId) {
+    final raw = _coreBox.get('known_badge_levels_$driverId') as String?;
+    if (raw == null || raw.isEmpty) return <String, int>{};
+    try {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      return decoded.map(
+        (String k, dynamic v) => MapEntry<String, int>(k, (v as num).toInt()),
+      );
+    } catch (_) {
+      return <String, int>{};
+    }
+  }
 }

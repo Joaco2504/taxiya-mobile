@@ -84,7 +84,17 @@ void main() {
       totalTrips: 25,
       currentLocation: null,
       lastLocationAt: null,
-      activeBadges: <DriverBadge>[],
+      activeBadges: <DriverBadge>[
+        DriverBadge(
+          id: 'b1',
+          driverId: 'd1',
+          rawCode: 'local_fav',
+          badgeCode: DriverBadgeCode.localFav,
+          level: BadgeLevel.oro,
+          awardedAt: null,
+          expiresAt: null,
+        ),
+      ],
     );
 
     await tester.pumpWidget(
@@ -105,6 +115,7 @@ void main() {
     );
 
     expect(find.text('Carlos Gómez'), findsOneWidget);
+    expect(find.textContaining('Favorito del Pueblo · Oro'), findsOneWidget);
     expect(find.textContaining('Patente oculta por privacidad'), findsOneWidget);
     expect(find.text('Ida y vuelta (15 min)'), findsOneWidget);
     expect(find.text('Chat'), findsOneWidget);

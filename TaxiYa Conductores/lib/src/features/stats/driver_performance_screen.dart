@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:taxiya_core/taxiya_core.dart';
 
-/// Pantalla de rendimiento local, horas conectado, Turno Nocturno, metas e insignias del chofer.
+/// Pantalla de rendimiento local, horas conectado, Turno Nocturno,
+/// y progreso de las 30 insignias (5 categorías × 6 niveles evolutivos).
 class DriverPerformanceScreen extends ConsumerStatefulWidget {
   const DriverPerformanceScreen({
     super.key,
@@ -24,6 +27,7 @@ class _DriverPerformanceScreenState
   bool _loading = true;
   List<Trip> _trips = const <Trip>[];
   List<TripRating> _ratings = const <TripRating>[];
+  Map<DriverBadgeCode, BadgeConfig> _badgeConfigs = BadgeConfig.defaultsMap();
   List<DriverBadge> _dbBadges = const <DriverBadge>[];
 
   @override
@@ -39,11 +43,11 @@ class _DriverPerformanceScreenState
       final results = await Future.wait<dynamic>([
         repo.fetchDriverTripsHistory(widget.profile.id),
         repo.fetchDriverRatings(widget.profile.id),
-        repo.fetchDriverBadges(widget.profile.id),
+        repo.fetchBadgeConfigs(widget.profile.localityId),
       ]);
       final trips = results[0] as List<Trip>;
       final ratings = results[1] as List<TripRating>;
-      var badges = results[2] as List<DriverBadge>;
+      final configs = results[2] as Map<DriverBadgeCode, BadgeConfig>;
 
       final weekStart = DriverStatsCalculator.startOfPeriod(
         DateTime.now(),
@@ -58,22 +62,34 @@ class _DriverPerformanceScreenState
         trips: trips,
         ratings: ratings,
         onlineHoursInPeriod: weekHours,
+        badgeConfigs: configs,
         profileRatingAvg: widget.details.ratingAvg,
       );
 
-      if (computed.earnedBadgeCodes.isNotEmpty) {
-        badges = await repo.syncEarnedDriverBadges(
-          driverId: widget.profile.id,
-          earnedCodes: computed.earnedBadgeCodes,
-        );
-      }
+      final syncRes = await repo.syncProgressiveDriverBadges(
+        driverId: widget.profile.id,
+        progressByCode: computed.badgeProgress,
+      );
 
       if (mounted) {
         setState(() {
           _trips = trips;
           _ratings = ratings;
-          _dbBadges = badges;
+          _badgeConfigs = configs;
+          _dbBadges = syncRes.badges;
         });
+        if (syncRes.levelUps.isNotEmpty) {
+          final first = syncRes.levelUps.first;
+          unawaited(TaxiyaSoundService().playChime());
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              duration: const Duration(seconds: 6),
+              content: Text(
+                'Subiste a nivel ${first.newLevel.labelAr} en ${first.badgeCode.labelAr}.',
+              ),
+            ),
+          );
+        }
       }
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -98,19 +114,23 @@ class _DriverPerformanceScreenState
       trips: _trips,
       ratings: _ratings,
       onlineHoursInPeriod: onlineHours,
+      badgeConfigs: _badgeConfigs,
       profileRatingAvg: widget.details.ratingAvg,
     );
 
-    final activeDbCodes = _dbBadges
-        .where((DriverBadge b) => b.isActive && b.badgeCode != null)
-        .map((DriverBadge b) => b.badgeCode!)
-        .toSet();
-    final combinedEarned = <DriverBadgeCode>{
-      ...stats.earnedBadgeCodes,
-      ...activeDbCodes,
+    final dbLevelByCode = <DriverBadgeCode, BadgeLevel>{
+      for (final b in _dbBadges)
+        if (b.isActive && b.badgeCode != null) b.badgeCode!: b.level,
     };
 
-    // Estadística desbloqueable de zonas más activas en la localidad.
+    var effectiveHighest = stats.highestBadgeLevel;
+    for (final lvl in dbLevelByCode.values) {
+      if (lvl.level > effectiveHighest.level) {
+        effectiveHighest = lvl;
+      }
+    }
+
+    // Zonas de demanda desbloqueables (Nivel 5 Diamante / Nivel 6 Obsidiana).
     final zoneCounts = <String, int>{};
     for (final trip in _trips.where((t) => t.status == TripStatus.completed)) {
       final zone = (trip.originAddress?.trim().isNotEmpty ?? false)
@@ -123,7 +143,7 @@ class _DriverPerformanceScreenState
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Tu rendimiento y logros'),
+        title: const Text('Tu rendimiento e insignias'),
         actions: [
           IconButton(
             tooltip: 'Actualizar métricas',
@@ -191,70 +211,7 @@ class _DriverPerformanceScreenState
                 ),
                 const SizedBox(height: 18),
                 Text(
-                  'Metas locales',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Card(
-                  margin: EdgeInsets.zero,
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      children: [
-                        _GoalProgressRow(
-                          title: '20 viajes semanales',
-                          progressLabel:
-                              '${stats.weeklyCompletedTrips} / 20 viajes',
-                          fraction: (stats.weeklyCompletedTrips / 20).clamp(
-                            0.0,
-                            1.0,
-                          ),
-                          color: colors.success,
-                        ),
-                        const SizedBox(height: 14),
-                        _GoalProgressRow(
-                          title:
-                              '5 viajes en Turno Nocturno (${TaxiyaDateUtils.nightShiftRangeLabel(context)})',
-                          progressLabel: '${stats.weeklyNightTrips} / 5 viajes',
-                          fraction: (stats.weeklyNightTrips / 5).clamp(
-                            0.0,
-                            1.0,
-                          ),
-                          color: scheme.secondary,
-                        ),
-                        const SizedBox(height: 14),
-                        _GoalProgressRow(
-                          title: 'Calificación mínima 4,8 en 15 viajes',
-                          progressLabel:
-                              '${stats.averageRating?.toStringAsFixed(1) ?? '0.0'} · ${stats.evaluatedTripsCount}/15 viajes',
-                          fraction: (((stats.averageRating ?? 0) / 4.8) * 0.5 +
-                                  (stats.evaluatedTripsCount / 15).clamp(
-                                        0.0,
-                                        1.0,
-                                      ) *
-                                      0.5)
-                              .clamp(0.0, 1.0),
-                          color: scheme.primary,
-                        ),
-                        const SizedBox(height: 14),
-                        _GoalProgressRow(
-                          title: '10 viajes seguidos sin cancelar',
-                          progressLabel: '${stats.noCancelStreak} / 10 seguidos',
-                          fraction: (stats.noCancelStreak / 10).clamp(
-                            0.0,
-                            1.0,
-                          ),
-                          color: colors.success,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 18),
-                Text(
-                  'Recompensas activas',
+                  'Recompensas activas (${effectiveHighest.labelAr})',
                   style: theme.textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w800,
                   ),
@@ -267,30 +224,27 @@ class _DriverPerformanceScreenState
                     child: Column(
                       children: [
                         _RewardRow(
-                          title: 'Prioridad de 5 s al recibir pedidos nuevos',
-                          active: combinedEarned.any(
-                            (DriverBadgeCode c) => c.grantsOrderPriority,
-                          ),
+                          title:
+                              'Niveles 1-2 (Madera / Cobre): insignia visible y +2 s de prioridad',
+                          active: effectiveHighest.level >= 1,
                         ),
-                        const Divider(height: 18),
+                        const Divider(height: 16),
                         _RewardRow(
-                          title: 'Borde dorado visible en la tarjeta del pasajero',
-                          active: combinedEarned.any(
-                            (DriverBadgeCode c) => c.grantsGoldBorder,
-                          ),
+                          title:
+                              'Niveles 3-4 (Plata / Oro): borde en tarjeta del pasajero y +5 s de prioridad',
+                          active: effectiveHighest.level >= 3,
                         ),
-                        const Divider(height: 18),
+                        const Divider(height: 16),
                         _RewardRow(
-                          title: 'Estadísticas de zonas activas en la localidad',
-                          active: combinedEarned.contains(
-                            DriverBadgeCode.nightShift,
-                          ),
+                          title:
+                              'Niveles 5-6 (Diamante / Obsidiana): borde especial, +8 s de prioridad y estadísticas Premium por 15 días',
+                          active: effectiveHighest.level >= 5,
                         ),
                       ],
                     ),
                   ),
                 ),
-                if (combinedEarned.contains(DriverBadgeCode.nightShift) &&
+                if (effectiveHighest.grantsPremiumZoneStatsFor15Days &&
                     topZones.isNotEmpty) ...[
                   const SizedBox(height: 14),
                   Card(
@@ -301,13 +255,13 @@ class _DriverPerformanceScreenState
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Zonas con mayor demanda en tu historial',
+                            'Estadísticas avanzadas por zona (desbloqueo 15 días)',
                             style: theme.textTheme.titleSmall?.copyWith(
                               fontWeight: FontWeight.w800,
                             ),
                           ),
                           const SizedBox(height: 8),
-                          ...topZones.take(4).map((e) {
+                          ...topZones.take(5).map((e) {
                             return Padding(
                               padding: const EdgeInsets.symmetric(vertical: 4),
                               child: Row(
@@ -336,40 +290,202 @@ class _DriverPerformanceScreenState
                 ],
                 const SizedBox(height: 18),
                 Text(
-                  'Insignias',
+                  'Tus 5 categorías de insignias (6 niveles)',
                   style: theme.textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w800,
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 4),
+                Text(
+                  'Arrancás en Nivel 0 y evolucionás de Madera a Obsidiana en cada categoría.',
+                  style: TextStyle(fontSize: 12.5, color: colors.textSecondary),
+                ),
+                const SizedBox(height: 10),
                 ...DriverBadgeCode.values.map((DriverBadgeCode code) {
-                  final unlocked = combinedEarned.contains(code);
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    child: ListTile(
-                      leading: TaxiyaBadgePill(badgeCode: code),
-                      title: Text(
-                        code.descriptionAr,
-                        style: const TextStyle(fontSize: 13.5),
-                      ),
-                      subtitle: Text(
-                        'Beneficio: ${code.rewardAr}',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: colors.textSecondary,
-                        ),
-                      ),
-                      trailing: Icon(
-                        unlocked
-                            ? Icons.check_circle_rounded
-                            : Icons.lock_outline_rounded,
-                        color: unlocked ? colors.success : colors.textSecondary,
-                      ),
-                    ),
+                  final progress = stats.badgeProgress[code]!;
+                  final dbLevel = dbLevelByCode[code] ?? BadgeLevel.none;
+                  final currentLevel =
+                      dbLevel.level > progress.currentLevel.level
+                      ? dbLevel
+                      : progress.currentLevel;
+                  final accent = Color(
+                    (currentLevel.isEarned ? currentLevel : BadgeLevel.madera)
+                        .colorHex,
+                  );
+
+                  return _BadgeCategoryCard(
+                    code: code,
+                    progress: progress,
+                    effectiveLevel: currentLevel,
+                    accent: accent,
                   );
                 }),
               ],
             ),
+    );
+  }
+}
+
+class _BadgeCategoryCard extends StatelessWidget {
+  const _BadgeCategoryCard({
+    required this.code,
+    required this.progress,
+    required this.effectiveLevel,
+    required this.accent,
+  });
+
+  final DriverBadgeCode code;
+  final DriverBadgeProgress progress;
+  final BadgeLevel effectiveLevel;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.taxiyaColors;
+    final nextTarget = progress.nextTargetCount;
+    final nextLevel = effectiveLevel.level < 6
+        ? BadgeLevel.fromLevelInt(effectiveLevel.level + 1)
+        : null;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                TaxiyaBadgeArtwork(
+                  badgeCode: code,
+                  level: effectiveLevel,
+                  size: 48,
+                  locked: !effectiveLevel.isEarned,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        code.labelAr,
+                        style: const TextStyle(
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        code.descriptionAr,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: colors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 9,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: accent.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: accent.withValues(alpha: 0.6)),
+                  ),
+                  child: Text(
+                    effectiveLevel.isEarned
+                        ? 'Nivel ${effectiveLevel.level} · ${effectiveLevel.labelAr}'
+                        : 'Nivel 0',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w800,
+                      color: effectiveLevel.isEarned
+                          ? accent
+                          : colors.textSecondary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    nextTarget != null && nextLevel != null
+                        ? 'Próximo nivel (${nextLevel.labelAr}): ${progress.currentCount} / $nextTarget ${code.unitAr}'
+                        : 'Nivel máximo Obsidiana alcanzado (${progress.currentCount} ${code.unitAr})',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: colors.textSecondary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                minHeight: 8,
+                value: progress.progressFraction,
+                color: accent,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: List<Widget>.generate(6, (int idx) {
+                final tierLevel = BadgeLevel.unlockableLevels[idx];
+                final unlocked = effectiveLevel.level >= tierLevel.level;
+                final threshold = idx < progress.thresholds.length
+                    ? progress.thresholds[idx]
+                    : code.defaultThresholds[idx];
+
+                return Expanded(
+                  child: Column(
+                    children: [
+                      TaxiyaBadgeArtwork(
+                        badgeCode: code,
+                        level: tierLevel,
+                        size: 36,
+                        locked: !unlocked,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        tierLevel.labelAr,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight:
+                              unlocked ? FontWeight.w800 : FontWeight.w500,
+                          color: unlocked
+                              ? Color(tierLevel.colorHex)
+                              : colors.textSecondary,
+                        ),
+                      ),
+                      Text(
+                        '$threshold',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: colors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -428,60 +544,6 @@ class _KpiTile extends StatelessWidget {
   }
 }
 
-class _GoalProgressRow extends StatelessWidget {
-  const _GoalProgressRow({
-    required this.title,
-    required this.progressLabel,
-    required this.fraction,
-    required this.color,
-  });
-
-  final String title;
-  final String progressLabel;
-  final double fraction;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.taxiyaColors;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                title,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13.5,
-                ),
-              ),
-            ),
-            Text(
-              progressLabel,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: colors.textSecondary,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: LinearProgressIndicator(
-            minHeight: 8,
-            value: fraction,
-            color: color,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 class _RewardRow extends StatelessWidget {
   const _RewardRow({required this.title, required this.active});
 
@@ -502,9 +564,10 @@ class _RewardRow extends StatelessWidget {
         Expanded(
           child: Text(
             title,
-            style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
           ),
         ),
+        const SizedBox(width: 6),
         Text(
           active ? 'Activa' : 'Bloqueada',
           style: TextStyle(

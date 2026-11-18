@@ -7,7 +7,7 @@ class DriverIncomingOrderCard extends StatelessWidget {
     super.key,
     required this.trip,
     required this.driverLocation,
-    required this.hasPriorityReward,
+    required this.prioritySeconds,
     required this.accepting,
     required this.onAccept,
     required this.onDismiss,
@@ -15,7 +15,7 @@ class DriverIncomingOrderCard extends StatelessWidget {
 
   final Trip trip;
   final GeoPoint? driverLocation;
-  final bool hasPriorityReward;
+  final int prioritySeconds;
   final bool accepting;
   final VoidCallback onAccept;
   final VoidCallback onDismiss;
@@ -72,7 +72,7 @@ class DriverIncomingOrderCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (hasPriorityReward) ...[
+                if (prioritySeconds > 0) ...[
                   const SizedBox(width: 8),
                   Container(
                     padding: const EdgeInsets.symmetric(
@@ -84,7 +84,7 @@ class DriverIncomingOrderCard extends StatelessWidget {
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Text(
-                      'Prioridad 5s',
+                      'Prioridad +${prioritySeconds}s',
                       style: TextStyle(
                         fontSize: 11.5,
                         fontWeight: FontWeight.w800,

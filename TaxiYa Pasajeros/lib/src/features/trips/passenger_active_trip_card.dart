@@ -27,7 +27,8 @@ class PassengerActiveTripCard extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final colors = context.taxiyaColors;
-    final hasGoldBorder = driverSummary?.hasGoldCardReward ?? false;
+    final borderLevel = driverSummary?.highestBorderLevel ?? BadgeLevel.none;
+    final hasMaterialBorder = borderLevel.grantsPassengerCardBorder;
     final statusColor = _statusColor(trip.status, scheme, colors);
 
     return Card(
@@ -35,8 +36,12 @@ class PassengerActiveTripCard extends StatelessWidget {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18),
         side: BorderSide(
-          color: hasGoldBorder ? scheme.primary : colors.border,
-          width: hasGoldBorder ? 2.2 : 1.0,
+          color: hasMaterialBorder
+              ? Color(borderLevel.colorHex)
+              : colors.border,
+          width: hasMaterialBorder
+              ? (borderLevel.grantsSpecialBorder ? 2.6 : 2.1)
+              : 1.0,
         ),
       ),
       child: Padding(
@@ -220,6 +225,7 @@ class PassengerActiveTripCard extends StatelessWidget {
                       .map(
                         (b) => TaxiyaBadgePill(
                           badgeCode: b.badgeCode!,
+                          level: b.level,
                           compact: true,
                         ),
                       )

@@ -177,10 +177,12 @@ void main() {
             scheduledFor: null,
             cancelReason: null,
             cancelledBy: null,
-            acceptedAt: refNow.subtract(Duration(minutes: i * 10)),
+            acceptedAt: i < 5
+                ? DateTime(2026, 11, 18, 2, 10)
+                : DateTime(2026, 11, 18, 12 + (i % 6), 0),
             startedAt: i < 5
                 ? DateTime(2026, 11, 18, 2, 15)
-                : DateTime(2026, 11, 18, 12 + (i % 6), 0),
+                : DateTime(2026, 11, 18, 12 + (i % 6), 4),
             completedAt: refNow.subtract(Duration(minutes: i * 10)),
             createdAt: refNow.subtract(Duration(minutes: i * 10)),
           ),
@@ -212,9 +214,58 @@ void main() {
       expect(stats.noCancelStreak, 20);
       expect(stats.averageRating, 5.0);
       expect(stats.earnedBadgeCodes, containsAll(DriverBadgeCode.values));
+      expect(stats.badgeProgress[DriverBadgeCode.punctual]?.currentLevel, BadgeLevel.cobre);
+      expect(stats.badgeProgress[DriverBadgeCode.nightShift]?.currentLevel, BadgeLevel.madera);
+      expect(stats.maxPriorityAdvantageSeconds, 2);
       expect(stats.hasOrderPriorityReward, isTrue);
-      expect(stats.hasGoldBorderReward, isTrue);
-      expect(stats.hasZoneStatsReward, isTrue);
+      expect(stats.hasGoldBorderReward, isFalse);
+      expect(stats.hasZoneStatsReward, isFalse);
+
+      // Con umbrales personalizados menores se desbloquea Diamante/Obsidiana y recompensas máximas
+      final customCfgs = <DriverBadgeCode, BadgeConfig>{
+        for (final code in DriverBadgeCode.values)
+          code: BadgeConfig(
+            id: 'c-${code.code}',
+            localityId: 'loc1',
+            badgeCode: code,
+            thresholds: const <int>[1, 2, 3, 4, 5, 10],
+          ),
+      };
+      final maxed = DriverStatsCalculator.compute(
+        driverId: 'd1',
+        period: StatsPeriod.week,
+        trips: trips,
+        ratings: ratings,
+        onlineHoursInPeriod: 12.5,
+        badgeConfigs: customCfgs,
+        now: refNow,
+      );
+      expect(maxed.highestBadgeLevel, BadgeLevel.obsidiana);
+      expect(maxed.maxPriorityAdvantageSeconds, 8);
+      expect(maxed.orderHoldDelaySeconds, 0);
+      expect(maxed.hasGoldBorderReward, isTrue);
+      expect(maxed.hasZoneStatsReward, isTrue);
+
+      expect(
+        DriverBadgeCode.punctual.assetFileName(BadgeLevel.madera),
+        'puntual_1_madera.png',
+      );
+      expect(
+        DriverBadgeCode.localFav.assetFileName(BadgeLevel.cobre),
+        'favorito_2_cobre.png',
+      );
+      expect(
+        DriverBadgeCode.impeccable.assetFileName(BadgeLevel.oro),
+        'impecable_4_oro.png',
+      );
+      expect(
+        DriverBadgeCode.nightShift.assetFileName(BadgeLevel.diamante),
+        'nocturno_5_diamante.png',
+      );
+      expect(
+        DriverBadgeCode.veteran.assetFileName(BadgeLevel.obsidiana),
+        'veterano_6_obsidiana.png',
+      );
     });
 
     test('synthesizes valid PCM WAV headers and formats WhatsApp URLs', () {
