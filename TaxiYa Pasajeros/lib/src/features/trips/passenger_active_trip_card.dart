@@ -12,6 +12,8 @@ class PassengerActiveTripCard extends StatelessWidget {
     required this.onPanic,
     required this.onCancelTrip,
     required this.onInspectCarPhoto,
+    this.isFavoriteDriver = false,
+    this.onToggleFavoriteDriver,
   });
 
   final Trip trip;
@@ -21,6 +23,8 @@ class PassengerActiveTripCard extends StatelessWidget {
   final VoidCallback onPanic;
   final VoidCallback onCancelTrip;
   final void Function(String url) onInspectCarPhoto;
+  final bool isFavoriteDriver;
+  final VoidCallback? onToggleFavoriteDriver;
 
   @override
   Widget build(BuildContext context) {
@@ -171,6 +175,28 @@ class PassengerActiveTripCard extends StatelessWidget {
                                 ),
                               ),
                             ],
+                            if (onToggleFavoriteDriver != null)
+                              IconButton(
+                                tooltip: isFavoriteDriver
+                                    ? 'Quitar de Taxistas Favoritos'
+                                    : 'Marcar como Taxista favorito',
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.only(left: 4),
+                                constraints: const BoxConstraints(
+                                  minWidth: 28,
+                                  minHeight: 28,
+                                ),
+                                onPressed: onToggleFavoriteDriver,
+                                icon: Icon(
+                                  isFavoriteDriver
+                                      ? Icons.star_rounded
+                                      : Icons.star_outline_rounded,
+                                  size: 20,
+                                  color: isFavoriteDriver
+                                      ? scheme.primary
+                                      : colors.textSecondary,
+                                ),
+                              ),
                           ],
                         ),
                         const SizedBox(height: 2),

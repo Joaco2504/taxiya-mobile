@@ -112,9 +112,46 @@ class _PlacePickerSheetState extends ConsumerState<PlacePickerSheet> {
     }
   }
 
-  Future<void> _openCreateLandmarkDialog({required bool isPublic}) async {
+  Future<void> _openCreateLandmarkDialog({
+    required bool isPublic,
+    int currentPersonalCount = 0,
+  }) async {
     final localityId = widget.locality?.id ?? widget.profile.localityId;
     if (localityId == null) return;
+
+    if (!isPublic && !widget.profile.isPremium && currentPersonalCount >= 2) {
+      await showDialog<void>(
+        context: context,
+        builder: (BuildContext ctx) {
+          return AlertDialog(
+            title: const Text('Límite de lugares personales'),
+            content: const Text(
+              r'En el Plan Gratuito y Sin Publicidad podés guardar hasta 2 lugares personales. Con Plan Premium ($ 3 USD/mes) guardás todos tus destinos favoritos sin límites.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Entendido'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const TaxiyaPlansScreen(
+                        role: TaxiyaRole.passenger,
+                      ),
+                    ),
+                  );
+                },
+                child: const Text('Ver Plan Premium'),
+              ),
+            ],
+          );
+        },
+      );
+      return;
+    }
 
     final nameCtrl = TextEditingController();
     var category = isPublic ? 'Plaza' : 'Casa';
@@ -234,8 +271,10 @@ class _PlacePickerSheetState extends ConsumerState<PlacePickerSheet> {
     final all = landmarksAsync.value ?? const <Landmark>[];
     final query = _searchCtrl.text.trim().toLowerCase();
 
-    final personalPlaces = all
+    final allPersonal = all
         .where((Landmark l) => !l.isPublic && l.location != null)
+        .toList();
+    final personalPlaces = allPersonal
         .where((Landmark l) => query.isEmpty || l.name.toLowerCase().contains(query))
         .toList();
     final publicPlaces = all
@@ -336,7 +375,9 @@ class _PlacePickerSheetState extends ConsumerState<PlacePickerSheet> {
                       children: [
                         Expanded(
                           child: Text(
-                            'Tus destinos personales',
+                            widget.profile.isPremium
+                                ? 'Tus destinos personales (ilimitados)'
+                                : 'Tus destinos personales (${allPersonal.length} / 2)',
                             style: TextStyle(
                               fontWeight: FontWeight.w700,
                               color: colors.textSecondary,
@@ -344,8 +385,10 @@ class _PlacePickerSheetState extends ConsumerState<PlacePickerSheet> {
                           ),
                         ),
                         TextButton.icon(
-                          onPressed: () =>
-                              _openCreateLandmarkDialog(isPublic: false),
+                          onPressed: () => _openCreateLandmarkDialog(
+                            isPublic: false,
+                            currentPersonalCount: allPersonal.length,
+                          ),
                           icon: const Icon(Icons.add_rounded, size: 18),
                           label: const Text('Guardar actual'),
                         ),

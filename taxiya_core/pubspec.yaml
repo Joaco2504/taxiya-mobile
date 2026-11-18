@@ -5,15 +5,17 @@ publish_to: "none"
 
 environment:
   sdk: ^3.12.0
-  flutter: ">=3.24.0"
+  flutter: ">=3.38.1"
 
 dependencies:
   flutter:
     sdk: flutter
   audioplayers: ^6.8.1
   flutter_riverpod: ^3.5.0
+  google_mobile_ads: ^9.2.0
   hive_flutter: ^1.1.0
   intl: ^0.20.2
+  purchases_flutter: ^11.0.4
   supabase_flutter: ^2.18.3
   url_launcher: ^6.3.3
 

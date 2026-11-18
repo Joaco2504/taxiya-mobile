@@ -1,3 +1,7 @@
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:taxiya_core/taxiya_core.dart';
 
@@ -280,6 +284,194 @@ void main() {
       );
       expect(waUri.toString(), contains('https://wa.me/5493835412345'));
       expect(waUri.queryParameters['text'], 'Hola soporte');
+    });
+  });
+
+  group('Phase 5 Badges, Subscriptions, Ads & Heat Analytics', () {
+    test('all 30 badge PNG assets exist in assets/badges matching code & level', () {
+      for (final code in DriverBadgeCode.values) {
+        for (final level in BadgeLevel.unlockableLevels) {
+          final fileName = code.assetFileName(level);
+          final file = File('assets/badges/$fileName');
+          expect(
+            file.existsSync(),
+            isTrue,
+            reason: 'Falta archivo oficial de insignia: assets/badges/$fileName',
+          );
+        }
+      }
+    });
+
+    test('validates AdBanner date window and FavoriteDriver priority coding', () {
+      final today = DateTime(2026, 11, 18, 15, 0);
+      final activeBanner = AdBanner.fromJson(<String, dynamic>{
+        'id': 'ad1',
+        'locality_id': 'loc1',
+        'business_name': 'Despensa Belén',
+        'image_url': 'https://example.com/ad.png',
+        'action_type': 'whatsapp',
+        'action_target': '3835400111',
+        'start_date': '2026-11-01',
+        'end_date': '2026-11-25',
+        'is_paid': true,
+        'is_active': true,
+        'clicks_count': 4,
+      });
+      expect(activeBanner.isCurrentlyRunning(today), isTrue);
+      expect(activeBanner.isWhatsAppAction, isTrue);
+
+      final expiredBanner = AdBanner.fromJson(<String, dynamic>{
+        'id': 'ad2',
+        'locality_id': 'loc1',
+        'business_name': 'Comercio Vencido',
+        'image_url': '',
+        'action_type': 'web',
+        'action_target': 'https://example.com',
+        'end_date': '2026-11-10',
+        'is_paid': true,
+        'is_active': true,
+      });
+      expect(expiredBanner.isCurrentlyRunning(today), isFalse);
+
+      final encoded = TaxiyaTripPriorityUtils.encodePreferredDrivers(
+        const <String>['drv-1', 'drv-2', 'drv-1'],
+      );
+      expect(encoded, 'fav:drv-1,drv-2');
+      expect(
+        TaxiyaTripPriorityUtils.parsePreferredDrivers(encoded),
+        <String>['drv-1', 'drv-2'],
+      );
+      expect(TaxiyaTripPriorityUtils.isRealCancelReason(encoded), isFalse);
+      expect(
+        TaxiyaTripPriorityUtils.isRealCancelReason('Demora en origen'),
+        isTrue,
+      );
+    });
+
+    test('synthesizes distinct WAV tones for all DriverOrderSoundPreset modes and computes heat zones', () {
+      for (final preset in DriverOrderSoundPreset.values) {
+        final bytes = TaxiyaSoundGenerator.buildTripRequestRingWav(preset);
+        expect(bytes.length, greaterThan(44));
+        expect(String.fromCharCodes(bytes.sublist(0, 4)), 'RIFF');
+      }
+
+      final landmarks = <Landmark>[
+        Landmark(
+          id: 'lm1',
+          localityId: 'loc1',
+          name: 'Plaza Olmos',
+          category: 'Plaza',
+          location: const GeoPoint(lat: -27.6514, lng: -67.0286),
+          isPublic: true,
+          status: 'approved',
+          createdBy: null,
+          createdAt: null,
+        ),
+      ];
+      final trips = <Trip>[
+        Trip(
+          id: 't1',
+          passengerId: 'p1',
+          driverId: 'd1',
+          localityId: 'loc1',
+          status: TripStatus.completed,
+          originAddress: 'Plaza principal',
+          originPoint: const GeoPoint(lat: -27.6515, lng: -67.0285),
+          destAddress: 'Hospital',
+          destPoint: null,
+          isRoundTrip: false,
+          waitMinutes: null,
+          scheduledFor: null,
+          cancelReason: null,
+          cancelledBy: null,
+          acceptedAt: DateTime(2026, 11, 18, 9, 10),
+          startedAt: DateTime(2026, 11, 18, 9, 15),
+          completedAt: DateTime(2026, 11, 18, 9, 25),
+          createdAt: DateTime(2026, 11, 18, 9, 5),
+        ),
+        Trip(
+          id: 't2',
+          passengerId: 'p2',
+          driverId: null,
+          localityId: 'loc1',
+          status: TripStatus.cancelled,
+          originAddress: 'Cancelado',
+          originPoint: const GeoPoint(lat: -27.6515, lng: -67.0285),
+          destAddress: null,
+          destPoint: null,
+          isRoundTrip: false,
+          waitMinutes: null,
+          scheduledFor: null,
+          cancelReason: 'Usuario canceló',
+          cancelledBy: 'p2',
+          acceptedAt: null,
+          startedAt: null,
+          completedAt: null,
+          createdAt: DateTime(2026, 11, 18, 10, 0),
+        ),
+      ];
+
+      final analytics = DriverHeatAnalytics.fromTrips(
+        trips: trips,
+        landmarks: landmarks,
+      );
+      expect(analytics.totalAnalyzedTrips, 1);
+      expect(analytics.topZones.first.label, 'Plaza Olmos');
+      expect(analytics.peakHours.first.tripCount, 1);
+    });
+
+    testWidgets('hides TaxiyaAdBannerWidget on paid plans and renders on free plan', (
+      WidgetTester tester,
+    ) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            theme: TaxiyaTheme.light,
+            home: const Scaffold(
+              body: Column(
+                children: [
+                  TaxiyaAdBannerWidget(
+                    localityId: '',
+                    subscriptionTier: SubscriptionTier.free,
+                    role: TaxiyaRole.passenger,
+                    disablePlatformAdsForTest: true,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Quitar anuncios'), findsOneWidget);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            theme: TaxiyaTheme.light,
+            home: const Scaffold(
+              body: Column(
+                children: [
+                  TaxiyaAdBannerWidget(
+                    localityId: '',
+                    subscriptionTier: SubscriptionTier.noAds,
+                    role: TaxiyaRole.passenger,
+                    disablePlatformAdsForTest: true,
+                  ),
+                  TaxiyaAdBannerWidget(
+                    localityId: '',
+                    subscriptionTier: SubscriptionTier.premium,
+                    role: TaxiyaRole.driver,
+                    disablePlatformAdsForTest: true,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Quitar anuncios'), findsNothing);
     });
   });
 }

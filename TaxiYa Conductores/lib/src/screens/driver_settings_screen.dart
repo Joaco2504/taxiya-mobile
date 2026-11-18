@@ -178,8 +178,13 @@ class _DriverSettingsScreenState extends ConsumerState<DriverSettingsScreen> {
     final profile = ref.watch(currentProfileProvider).value;
     final details = ref.watch(driverDetailsProvider).value;
     final themeMode = ref.watch(themeModeProvider);
+    final selectedSoundPreset = ref.watch(driverSoundPresetProvider);
     final cache = ref.watch(hiveCacheProvider);
     final colors = context.taxiyaColors;
+    final knownBadges = cache.loadDriverBadges(profile?.id ?? '');
+    final hasHighBadge = knownBadges.any(
+      (b) => b.isActive && b.level.grantsPremiumZoneStatsFor15Days,
+    );
 
     if (profile == null) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
@@ -511,7 +516,171 @@ class _DriverSettingsScreenState extends ConsumerState<DriverSettingsScreen> {
               icon: const Icon(Icons.help_outline_rounded),
               label: const Text('Ayuda y guía de uso'),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 14),
+            Card(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ListTile(
+                    leading: Icon(
+                      profile.isPremium
+                          ? Icons.workspace_premium_rounded
+                          : Icons.verified_user_outlined,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    title: const Text(
+                      'Planes y Suscripciones',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: Text(
+                      profile.subscriptionTier.labelAr,
+                      style: TextStyle(color: colors.textSecondary),
+                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const TaxiyaPlansScreen(
+                            role: TaxiyaRole.driver,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Sonido de nuevos pedidos',
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                        if (!profile.isPremium && !hasHighBadge)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.primary.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: const Text(
+                              'Plan Premium',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      profile.isPremium || hasHighBadge
+                          ? 'Elegí el tono distintivo para cuando entre un viaje.'
+                          : 'Desbloqueá tonos personalizados con Plan Premium o Nivel Diamante.',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        color: colors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    RadioGroup<DriverOrderSoundPreset>(
+                      groupValue: selectedSoundPreset,
+                      onChanged: (DriverOrderSoundPreset? val) async {
+                        if (val == null) return;
+                        if (!profile.isPremium &&
+                            !hasHighBadge &&
+                            val != DriverOrderSoundPreset.classic) {
+                          if (!context.mounted) return;
+                          await Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const TaxiyaPlansScreen(
+                                role: TaxiyaRole.driver,
+                              ),
+                            ),
+                          );
+                          return;
+                        }
+                        await ref
+                            .read(driverSoundPresetProvider.notifier)
+                            .setPreset(val);
+                      },
+                      child: Column(
+                        children: DriverOrderSoundPreset.values.map((
+                          DriverOrderSoundPreset preset,
+                        ) {
+                          final unlocked =
+                              profile.isPremium ||
+                              hasHighBadge ||
+                              preset == DriverOrderSoundPreset.classic;
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Radio<DriverOrderSoundPreset>(
+                              value: preset,
+                            ),
+                            title: Text(
+                              preset.labelAr,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            subtitle: Text(
+                              unlocked
+                                  ? preset.descriptionAr
+                                  : 'Disponible en Plan Premium',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: colors.textSecondary,
+                              ),
+                            ),
+                            trailing: IconButton(
+                              tooltip: 'Probar tono',
+                              icon: const Icon(Icons.volume_up_rounded),
+                              onPressed: () {
+                                TaxiyaSoundService().playPresetPreview(preset);
+                              },
+                            ),
+                            onTap: () async {
+                              if (!unlocked) {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => const TaxiyaPlansScreen(
+                                      role: TaxiyaRole.driver,
+                                    ),
+                                  ),
+                                );
+                                return;
+                              }
+                              await ref
+                                  .read(driverSoundPresetProvider.notifier)
+                                  .setPreset(preset);
+                            },
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
             OutlinedButton.icon(
               onPressed: () {
                 Navigator.of(context).pop();
@@ -530,6 +699,14 @@ class _DriverSettingsScreenState extends ConsumerState<DriverSettingsScreen> {
               icon: const Icon(Icons.logout_rounded),
               label: const Text('Cerrar sesión'),
             ),
+            if (profile.showsAds) ...[
+              const SizedBox(height: 14),
+              TaxiyaAdBannerWidget(
+                localityId: profile.localityId ?? '',
+                subscriptionTier: profile.subscriptionTier,
+                role: TaxiyaRole.driver,
+              ),
+            ],
           ],
         ),
       ),

@@ -544,7 +544,10 @@ class TaxiyaRepository {
     bool isRoundTrip = false,
     int? waitMinutes,
     DateTime? scheduledFor,
+    List<String> preferredDriverIds = const <String>[],
   }) async {
+    final preferredTag =
+        TaxiyaTripPriorityUtils.encodePreferredDrivers(preferredDriverIds);
     final payload = <String, dynamic>{
       'passenger_id': passengerId,
       'locality_id': localityId,
@@ -559,6 +562,7 @@ class TaxiyaRepository {
       'wait_minutes': ?waitMinutes,
       if (scheduledFor != null)
         'scheduled_for': scheduledFor.toUtc().toIso8601String(),
+      'cancel_reason': ?preferredTag,
     };
     final row = await _client.from('trips').insert(payload).select().single();
     final trip = Trip.fromJson(Map<String, dynamic>.from(row));
@@ -713,6 +717,7 @@ class TaxiyaRepository {
           'driver_id': driverId,
           'status': TripStatus.accepted.dbValue,
           'accepted_at': nowIso,
+          'cancel_reason': null,
         })
         .eq('id', tripId)
         .eq('status', TripStatus.searching.dbValue)
@@ -739,7 +744,10 @@ class TaxiyaRepository {
       'status': nextStatus.dbValue,
       if (nextStatus == TripStatus.inProgress) 'started_at': nowIso,
       if (nextStatus == TripStatus.completed) 'completed_at': nowIso,
-      'cancel_reason': ?cancelReason,
+      if (cancelReason != null)
+        'cancel_reason': cancelReason
+      else if (nextStatus == TripStatus.cancelled)
+        'cancel_reason': null,
       'cancelled_by': ?cancelledBy,
     };
     try {
@@ -1204,5 +1212,176 @@ class TaxiyaRepository {
     return (rows as List<dynamic>)
         .map((e) => SupportTicket.fromJson(Map<String, dynamic>.from(e as Map)))
         .toList();
+  }
+
+  // ---- Suscripciones, Publicidad Local y Analítica Premium (Fase 5) ----
+
+  Future<Profile> updateMySubscriptionTier({
+    required String userId,
+    required SubscriptionTier tier,
+    DateTime? expiresAt,
+  }) async {
+    await _cache.saveSubscriptionOverride(userId, tier, expiresAt);
+    final payload = <String, dynamic>{
+      'subscription_tier': tier.dbValue,
+      'subscription_expires_at': expiresAt?.toUtc().toIso8601String(),
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    };
+    final row = await _client
+        .from('profiles')
+        .update(payload)
+        .eq('id', userId)
+        .select()
+        .single();
+    final profile = Profile.fromJson(Map<String, dynamic>.from(row));
+    await _cache.saveProfile(profile);
+    return profile;
+  }
+
+  Future<List<AdBanner>> fetchActiveAdBanners(String localityId) async {
+    if (localityId.trim().isEmpty) return const <AdBanner>[];
+    try {
+      final rows = await _client
+          .from('ad_banners')
+          .select()
+          .eq('locality_id', localityId)
+          .eq('is_active', true)
+          .eq('is_paid', true)
+          .order('created_at', ascending: false);
+      final parsed = (rows as List<dynamic>)
+          .map((e) => AdBanner.fromJson(Map<String, dynamic>.from(e as Map)))
+          .where((AdBanner banner) => banner.isCurrentlyRunning())
+          .toList();
+      await _cache.saveAdBanners(localityId, parsed);
+      return parsed;
+    } catch (_) {
+      return _cache
+          .loadAdBanners(localityId)
+          .where((AdBanner banner) => banner.isCurrentlyRunning())
+          .toList();
+    }
+  }
+
+  Future<void> incrementAdBannerClick({
+    required String bannerId,
+    required int nextClicksCount,
+  }) async {
+    try {
+      await _client
+          .from('ad_banners')
+          .update(<String, dynamic>{'clicks_count': nextClicksCount})
+          .eq('id', bannerId);
+    } catch (_) {
+      // Si las políticas RLS restringen escritura directa desde cliente móvil,
+      // no bloqueamos la apertura del enlace de WhatsApp o web del comercio.
+    }
+  }
+
+  Future<List<FavoriteDriverEntry>> fetchFavoriteDrivers(
+    String passengerId,
+  ) async {
+    final cached = _cache.loadFavoriteDrivers(passengerId);
+    try {
+      final rows = await _client
+          .from('favorite_drivers')
+          .select()
+          .eq('passenger_id', passengerId)
+          .order('created_at', ascending: false);
+      final list = (rows as List<dynamic>)
+          .map(
+            (e) => FavoriteDriverEntry.fromJson(
+              Map<String, dynamic>.from(e as Map),
+            ),
+          )
+          .where((e) => e.driverId.isNotEmpty)
+          .toList();
+      await _cache.saveFavoriteDrivers(passengerId, list);
+      return list;
+    } catch (_) {
+      return cached;
+    }
+  }
+
+  Future<bool> toggleFavoriteDriver({
+    required String passengerId,
+    required FavoriteDriverEntry driver,
+  }) async {
+    final current = List<FavoriteDriverEntry>.from(
+      _cache.loadFavoriteDrivers(passengerId),
+    );
+    final idx = current.indexWhere((e) => e.driverId == driver.driverId);
+    final bool isNowFavorite;
+    if (idx >= 0) {
+      current.removeAt(idx);
+      isNowFavorite = false;
+    } else {
+      current.insert(0, driver);
+      isNowFavorite = true;
+    }
+    await _cache.saveFavoriteDrivers(passengerId, current);
+
+    try {
+      if (isNowFavorite) {
+        await _client.from('favorite_drivers').upsert(<String, dynamic>{
+          'passenger_id': passengerId,
+          'driver_id': driver.driverId,
+          'full_name': driver.fullName,
+          'vehicle_label': driver.vehicleLabel,
+          'plate_number': driver.plateNumber,
+          'company_name': driver.companyName,
+          'avatar_url': driver.avatarUrl,
+        }, onConflict: 'passenger_id,driver_id');
+      } else {
+        await _client
+            .from('favorite_drivers')
+            .delete()
+            .eq('passenger_id', passengerId)
+            .eq('driver_id', driver.driverId);
+      }
+    } catch (_) {
+      // Respaldo persistente en Hive activo aunque aún no exista la tabla dedicada en PostgreSQL.
+    }
+    return isNowFavorite;
+  }
+
+  Future<DriverHeatAnalytics> fetchLocalityDemandAnalytics(
+    String localityId,
+  ) async {
+    final landmarks = await fetchLandmarks(localityId: localityId);
+    try {
+      final rows = await _client
+          .from('trips')
+          .select()
+          .eq('locality_id', localityId)
+          .order('created_at', ascending: false)
+          .limit(250);
+      final trips = (rows as List<dynamic>)
+          .map((e) => Trip.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList();
+      return DriverHeatAnalytics.fromTrips(trips: trips, landmarks: landmarks);
+    } catch (_) {
+      return DriverHeatAnalytics.fromTrips(
+        trips: const <Trip>[],
+        landmarks: landmarks,
+      );
+    }
+  }
+
+  Future<int> countActiveScheduledTrips(String passengerId) async {
+    try {
+      final rows = await _client
+          .from('trips')
+          .select('id')
+          .eq('passenger_id', passengerId)
+          .not('scheduled_for', 'is', null)
+          .inFilter('status', <String>[
+            TripStatus.searching.dbValue,
+            TripStatus.requested.dbValue,
+            TripStatus.accepted.dbValue,
+          ]);
+      return (rows as List<dynamic>).length;
+    } catch (_) {
+      return 0;
+    }
   }
 }

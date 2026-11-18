@@ -69,6 +69,11 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(
+      ref.read(subscriptionServiceProvider).ensureInitialized(
+        userId: widget.profile.id,
+      ),
+    );
     _latestGps = widget.details.currentLocation;
     _lastSyncAt = widget.details.lastLocationAt;
     _initialCameraCenter =
@@ -434,7 +439,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       _ringingOrderId = eligibleOrder.id;
       final notify = ref.read(hiveCacheProvider).notifyTrips;
       if (notify) {
-        await _sound.startOrderRing();
+        final soundPreset = ref.read(driverSoundPresetProvider);
+        await _sound.startOrderRing(preset: soundPreset);
         await _showLocalAlert(
           id: 9101,
           title: 'Nuevo pedido de taxi',
@@ -473,10 +479,17 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
       if (_dismissedOrderIds.contains(trip.id)) continue;
       if (!trip.isReadyForDriverDispatch(now)) continue;
 
-      // Escala de prioridad por nivel: Nivel 5-6 (+8s -> 0s espera), 3-4 (+5s -> 3s), 1-2 (+2s -> 6s), 0 (8s).
-      if (holdSeconds > 0 && trip.createdAt != null) {
+      final preferredIds = trip.preferredDriverIds;
+      final isFavoriteForMe =
+          preferredIds.isEmpty || preferredIds.contains(widget.profile.id);
+      final effectiveHold = isFavoriteForMe
+          ? holdSeconds
+          : holdSeconds + TaxiyaTripPriorityUtils.favoriteLeadSeconds;
+
+      // Escala combinada: favoritos del pasajero Premium reciben 10 s antes + prioridad por insignias (0..8 s).
+      if (effectiveHold > 0 && trip.createdAt != null) {
         final ageSec = now.difference(trip.createdAt!.toLocal()).inSeconds;
-        if (ageSec < holdSeconds) continue;
+        if (ageSec < effectiveHold) continue;
       }
       return trip;
     }
@@ -904,8 +917,127 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
     final isNightShift = TaxiyaDateUtils.isNightShift();
 
     return Scaffold(
+      drawer: Drawer(
+        child: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+                child: Row(
+                  children: [
+                    TaxiyaAvatar(
+                      avatarUrl: widget.profile.avatarUrl,
+                      fullName: widget.profile.fullName,
+                      radius: 24,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            widget.profile.fullName ?? 'Chofer TaxiYa',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 15.5,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            widget.profile.subscriptionTier.shortTitleAr,
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              color: widget.profile.isPremium
+                                  ? scheme.primary
+                                  : colors.textSecondary,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.workspace_premium_outlined),
+                title: const Text('Planes y Suscripciones'),
+                subtitle: Text(widget.profile.subscriptionTier.priceLabelAr),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) =>
+                          const TaxiyaPlansScreen(role: TaxiyaRole.driver),
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.local_fire_department_outlined),
+                title: const Text('Rendimiento y zonas'),
+                subtitle: const Text('Insignias y mapa de calor local'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => DriverPerformanceScreen(
+                        profile: widget.profile,
+                        details: widget.details,
+                      ),
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.help_outline_rounded),
+                title: const Text('Ayuda y guía de uso'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  openDriverHelpScreen(
+                    context: context,
+                    profile: widget.profile,
+                    localityName: locality?.name ?? 'Catamarca',
+                    activeTripId: activeTrip?.id,
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.settings_outlined),
+                title: const Text('Configuración'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => DriverSettingsScreen(
+                        onEditDossier: widget.onEditDossier,
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const Spacer(),
+              if (widget.profile.showsAds)
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: TaxiyaAdBannerWidget(
+                    localityId:
+                        locality?.id ?? widget.profile.localityId ?? '',
+                    subscriptionTier: widget.profile.subscriptionTier,
+                    role: TaxiyaRole.driver,
+                    compact: true,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
       appBar: AppBar(
-        titleSpacing: 16,
+        titleSpacing: 0,
         title: Row(
           children: [
             TaxiyaAvatar(
@@ -1243,6 +1375,15 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen> {
                           ),
                         ),
                       ),
+                      if (widget.profile.showsAds) ...[
+                        const SizedBox(height: 8),
+                        TaxiyaAdBannerWidget(
+                          localityId:
+                              locality?.id ?? widget.profile.localityId ?? '',
+                          subscriptionTier: widget.profile.subscriptionTier,
+                          role: TaxiyaRole.driver,
+                        ),
+                      ],
                     ],
                   ],
                 ),

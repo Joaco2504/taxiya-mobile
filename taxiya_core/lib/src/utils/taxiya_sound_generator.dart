@@ -4,6 +4,42 @@ import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 
+/// Tonos seleccionables de alerta de pedidos para conductores (Premium / Diamante / Obsidiana).
+enum DriverOrderSoundPreset {
+  classic(
+    code: 'classic',
+    labelAr: 'Tono clásico TaxiYa',
+    descriptionAr: 'Doble pulso claro para calle o ruta.',
+  ),
+  bell(
+    code: 'bell',
+    labelAr: 'Campana cristalina',
+    descriptionAr: 'Timbre agudo suave de tres notas.',
+  ),
+  urgent(
+    code: 'urgent',
+    labelAr: 'Alerta prioritaria',
+    descriptionAr: 'Tres impulsos rápidos de alta visibilidad.',
+  );
+
+  const DriverOrderSoundPreset({
+    required this.code,
+    required this.labelAr,
+    required this.descriptionAr,
+  });
+
+  final String code;
+  final String labelAr;
+  final String descriptionAr;
+
+  static DriverOrderSoundPreset fromCode(String? raw) {
+    for (final preset in values) {
+      if (preset.code == raw) return preset;
+    }
+    return DriverOrderSoundPreset.classic;
+  }
+}
+
 /// Generador puro en Dart de tonos WAV PCM 16 bits para alertas sin depender de red ni archivos binarios externos.
 abstract final class TaxiyaSoundGenerator {
   static const int _sampleRate = 22050;
@@ -17,15 +53,39 @@ abstract final class TaxiyaSoundGenerator {
     ]);
   }
 
-  /// Llamado persistente de pedido entrante para choferes.
-  static Uint8List buildTripRequestRingWav() {
-    return _synthesizeSequence(const <_ToneStep>[
-      _ToneStep(freqHz: 740, durationMs: 160, amplitude: 0.6),
-      _ToneStep(freqHz: 987.77, durationMs: 220, amplitude: 0.65),
-      _ToneStep(freqHz: 0, durationMs: 140, amplitude: 0),
-      _ToneStep(freqHz: 740, durationMs: 160, amplitude: 0.6),
-      _ToneStep(freqHz: 987.77, durationMs: 260, amplitude: 0.65),
-    ]);
+  /// Llamado persistente de pedido entrante para choferes según el perfil sonoro elegido.
+  static Uint8List buildTripRequestRingWav([
+    DriverOrderSoundPreset preset = DriverOrderSoundPreset.classic,
+  ]) {
+    switch (preset) {
+      case DriverOrderSoundPreset.classic:
+        return _synthesizeSequence(const <_ToneStep>[
+          _ToneStep(freqHz: 740, durationMs: 160, amplitude: 0.6),
+          _ToneStep(freqHz: 987.77, durationMs: 220, amplitude: 0.65),
+          _ToneStep(freqHz: 0, durationMs: 140, amplitude: 0),
+          _ToneStep(freqHz: 740, durationMs: 160, amplitude: 0.6),
+          _ToneStep(freqHz: 987.77, durationMs: 260, amplitude: 0.65),
+        ]);
+      case DriverOrderSoundPreset.bell:
+        return _synthesizeSequence(const <_ToneStep>[
+          _ToneStep(freqHz: 1046.50, durationMs: 130, amplitude: 0.52),
+          _ToneStep(freqHz: 1318.51, durationMs: 150, amplitude: 0.56),
+          _ToneStep(freqHz: 1567.98, durationMs: 260, amplitude: 0.6),
+          _ToneStep(freqHz: 0, durationMs: 160, amplitude: 0),
+          _ToneStep(freqHz: 1318.51, durationMs: 140, amplitude: 0.52),
+          _ToneStep(freqHz: 1567.98, durationMs: 240, amplitude: 0.58),
+        ]);
+      case DriverOrderSoundPreset.urgent:
+        return _synthesizeSequence(const <_ToneStep>[
+          _ToneStep(freqHz: 880, durationMs: 110, amplitude: 0.68),
+          _ToneStep(freqHz: 1108.73, durationMs: 120, amplitude: 0.72),
+          _ToneStep(freqHz: 0, durationMs: 65, amplitude: 0),
+          _ToneStep(freqHz: 880, durationMs: 110, amplitude: 0.68),
+          _ToneStep(freqHz: 1108.73, durationMs: 120, amplitude: 0.72),
+          _ToneStep(freqHz: 0, durationMs: 65, amplitude: 0),
+          _ToneStep(freqHz: 1318.51, durationMs: 180, amplitude: 0.75),
+        ]);
+    }
   }
 
   /// Alerta preventiva descendente (por ejemplo a los 3 minutos sin acercarse al origen).
@@ -118,8 +178,11 @@ class TaxiyaSoundService {
   AudioPlayer? _loopPlayer;
 
   static final Uint8List _chimeBytes = TaxiyaSoundGenerator.buildChimeWav();
-  static final Uint8List _ringBytes =
-      TaxiyaSoundGenerator.buildTripRequestRingWav();
+  static final Map<DriverOrderSoundPreset, Uint8List> _ringBytesByPreset =
+      <DriverOrderSoundPreset, Uint8List>{
+        for (final preset in DriverOrderSoundPreset.values)
+          preset: TaxiyaSoundGenerator.buildTripRequestRingWav(preset),
+      };
   static final Uint8List _warningBytes = TaxiyaSoundGenerator.buildWarningWav();
 
   Future<void> playChime() async {
@@ -130,11 +193,23 @@ class TaxiyaSoundService {
     await _playOneShot(_warningBytes);
   }
 
-  Future<void> startOrderRing() async {
+  Future<void> playPresetPreview(DriverOrderSoundPreset preset) async {
+    await _playOneShot(
+      _ringBytesByPreset[preset] ??
+          _ringBytesByPreset[DriverOrderSoundPreset.classic]!,
+    );
+  }
+
+  Future<void> startOrderRing({
+    DriverOrderSoundPreset preset = DriverOrderSoundPreset.classic,
+  }) async {
     try {
       _loopPlayer ??= AudioPlayer();
       await _loopPlayer!.setReleaseMode(ReleaseMode.loop);
-      await _loopPlayer!.play(BytesSource(_ringBytes), volume: 1.0);
+      final bytes =
+          _ringBytesByPreset[preset] ??
+          _ringBytesByPreset[DriverOrderSoundPreset.classic]!;
+      await _loopPlayer!.play(BytesSource(bytes), volume: 1.0);
     } catch (_) {
       // En emuladores sin salida de audio o pruebas unitarias continuamos sin bloquear.
     }

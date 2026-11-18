@@ -5,7 +5,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/taxiya_models.dart';
 import '../repositories/taxiya_repository.dart';
 import '../services/hive_cache_service.dart';
+import '../services/revenuecat_service.dart';
 import '../theme/taxiya_theme.dart';
+import '../utils/taxiya_sound_generator.dart';
 
 /// Proveedor del servicio de caché offline con Hive.
 final hiveCacheProvider = Provider<HiveCacheService>((Ref ref) {
@@ -86,3 +88,57 @@ class TaxiyaThemeModeNotifier extends Notifier<ThemeMode> {
 final themeModeProvider = NotifierProvider<TaxiyaThemeModeNotifier, ThemeMode>(
   TaxiyaThemeModeNotifier.new,
 );
+
+/// Servicio de suscripciones RevenueCat + respaldo Sandbox.
+final subscriptionServiceProvider = Provider<TaxiyaSubscriptionService>((Ref ref) {
+  return const TaxiyaSubscriptionService();
+});
+
+/// Banners locales pagos y vigentes para la localidad del usuario.
+final activeAdBannersProvider = FutureProvider.family<List<AdBanner>, String>((
+  Ref ref,
+  String localityId,
+) {
+  return ref.watch(taxiyaRepositoryProvider).fetchActiveAdBanners(localityId);
+});
+
+/// Taxistas favoritos guardados por un pasajero Premium.
+final favoriteDriversProvider =
+    FutureProvider.family<List<FavoriteDriverEntry>, String>((
+      Ref ref,
+      String passengerId,
+    ) {
+      return ref
+          .watch(taxiyaRepositoryProvider)
+          .fetchFavoriteDrivers(passengerId);
+    });
+
+/// Zonas de alta demanda y horarios pico en una localidad (Conductores Premium / Diamante).
+final localityHeatAnalyticsProvider =
+    FutureProvider.family<DriverHeatAnalytics, String>((
+      Ref ref,
+      String localityId,
+    ) {
+      return ref
+          .watch(taxiyaRepositoryProvider)
+          .fetchLocalityDemandAnalytics(localityId);
+    });
+
+/// Tono seleccionado por el chofer para pedidos entrantes, persistido en Hive.
+class DriverSoundPresetNotifier extends Notifier<DriverOrderSoundPreset> {
+  @override
+  DriverOrderSoundPreset build() {
+    final cache = ref.watch(hiveCacheProvider);
+    return DriverOrderSoundPreset.fromCode(cache.driverOrderSoundPreset);
+  }
+
+  Future<void> setPreset(DriverOrderSoundPreset preset) async {
+    state = preset;
+    await ref.read(hiveCacheProvider).setDriverOrderSoundPreset(preset.code);
+  }
+}
+
+final driverSoundPresetProvider =
+    NotifierProvider<DriverSoundPresetNotifier, DriverOrderSoundPreset>(
+      DriverSoundPresetNotifier.new,
+    );

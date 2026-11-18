@@ -90,6 +90,44 @@ enum SubscriptionTier {
         return 'Plan Premium (\$ 3 USD/mes)';
     }
   }
+
+  bool get isFree => this == SubscriptionTier.free;
+  bool get hidesAds =>
+      this == SubscriptionTier.noAds || this == SubscriptionTier.premium;
+  bool get isPremium => this == SubscriptionTier.premium;
+
+  String get shortTitleAr {
+    switch (this) {
+      case SubscriptionTier.free:
+        return 'Plan Gratuito';
+      case SubscriptionTier.noAds:
+        return 'Sin Publicidad';
+      case SubscriptionTier.premium:
+        return 'Plan Premium';
+    }
+  }
+
+  String get priceLabelAr {
+    switch (this) {
+      case SubscriptionTier.free:
+        return r'$ 0';
+      case SubscriptionTier.noAds:
+        return r'$ 2 USD / mes';
+      case SubscriptionTier.premium:
+        return r'$ 3 USD / mes';
+    }
+  }
+
+  String get productId {
+    switch (this) {
+      case SubscriptionTier.free:
+        return '';
+      case SubscriptionTier.noAds:
+        return 'taxiya_no_ads_monthly';
+      case SubscriptionTier.premium:
+        return 'taxiya_premium_monthly';
+    }
+  }
 }
 
 class Locality {
@@ -248,6 +286,9 @@ class Profile {
     'updated_at': updatedAt?.toIso8601String(),
   };
 
+  bool get showsAds => !subscriptionTier.hidesAds;
+  bool get isPremium => subscriptionTier.isPremium;
+
   Profile copyWith({
     String? fullName,
     String? phone,
@@ -255,6 +296,10 @@ class Profile {
     TaxiyaAccountStatus? accountStatus,
     String? localityId,
     String? avatarUrl,
+    SubscriptionTier? subscriptionTier,
+    DateTime? subscriptionExpiresAt,
+    bool clearSubscriptionExpiresAt = false,
+    String? fcmToken,
     String? themeMode,
     bool? notifyPromos,
   }) {
@@ -267,9 +312,11 @@ class Profile {
       accountStatus: accountStatus ?? this.accountStatus,
       localityId: localityId ?? this.localityId,
       avatarUrl: avatarUrl ?? this.avatarUrl,
-      subscriptionTier: subscriptionTier,
-      subscriptionExpiresAt: subscriptionExpiresAt,
-      fcmToken: fcmToken,
+      subscriptionTier: subscriptionTier ?? this.subscriptionTier,
+      subscriptionExpiresAt: clearSubscriptionExpiresAt
+          ? null
+          : (subscriptionExpiresAt ?? this.subscriptionExpiresAt),
+      fcmToken: fcmToken ?? this.fcmToken,
       themeMode: themeMode ?? this.themeMode,
       notifyPromos: notifyPromos ?? this.notifyPromos,
       createdAt: createdAt,
@@ -625,11 +672,16 @@ class Trip {
     'created_at': createdAt?.toIso8601String(),
   };
 
+  /// Identificadores de choferes favoritos priorizados 10 s antes cuando un pasajero Premium solicita el viaje.
+  List<String> get preferredDriverIds =>
+      TaxiyaTripPriorityUtils.parsePreferredDrivers(cancelReason);
+
   Trip copyWith({
     String? driverId,
     bool clearDriverId = false,
     TripStatus? status,
     String? cancelReason,
+    bool clearCancelReason = false,
     String? cancelledBy,
     DateTime? acceptedAt,
     DateTime? startedAt,
@@ -648,7 +700,8 @@ class Trip {
       isRoundTrip: isRoundTrip,
       waitMinutes: waitMinutes,
       scheduledFor: scheduledFor,
-      cancelReason: cancelReason ?? this.cancelReason,
+      cancelReason:
+          clearCancelReason ? null : (cancelReason ?? this.cancelReason),
       cancelledBy: cancelledBy ?? this.cancelledBy,
       acceptedAt: acceptedAt ?? this.acceptedAt,
       startedAt: startedAt ?? this.startedAt,
@@ -1472,7 +1525,7 @@ abstract final class DriverStatsCalculator {
       _startOfPeriod(current, period);
 
   static DateTime _startOfPeriod(DateTime current, StatsPeriod period) {
-    final dayStart = DateTime(current.year, current.month, current.day);
+    final dayStart = DateTime(current.year, current.month, dayStartValue(current));
     switch (period) {
       case StatsPeriod.day:
         return dayStart;
@@ -1481,5 +1534,331 @@ abstract final class DriverStatsCalculator {
       case StatsPeriod.month:
         return DateTime(current.year, current.month, 1);
     }
+  }
+
+  static int dayStartValue(DateTime current) => current.day;
+}
+
+/// Codifica/decodifica la prioridad de 10 s para Taxistas Favoritos mientras el viaje está `searching`.
+abstract final class TaxiyaTripPriorityUtils {
+  static const String favoritePrefix = 'fav:';
+  static const int favoriteLeadSeconds = 10;
+
+  static String? encodePreferredDrivers(List<String> driverIds) {
+    final normalized = driverIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .take(12)
+        .toList();
+    if (normalized.isEmpty) return null;
+    return '$favoritePrefix${normalized.join(',')}';
+  }
+
+  static List<String> parsePreferredDrivers(String? cancelReason) {
+    if (cancelReason == null || !cancelReason.startsWith(favoritePrefix)) {
+      return const <String>[];
+    }
+    final raw = cancelReason.substring(favoritePrefix.length);
+    return raw
+        .split(',')
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toList();
+  }
+
+  static bool isRealCancelReason(String? cancelReason) {
+    return cancelReason != null &&
+        cancelReason.trim().isNotEmpty &&
+        !cancelReason.startsWith(favoritePrefix);
+  }
+}
+
+/// Banner de comercio local administrado desde el panel web (`taxiya.ad_banners`).
+class AdBanner {
+  const AdBanner({
+    required this.id,
+    required this.localityId,
+    required this.businessName,
+    required this.imageUrl,
+    required this.actionType,
+    required this.actionTarget,
+    required this.startDate,
+    required this.endDate,
+    required this.isPaid,
+    required this.isActive,
+    required this.clicksCount,
+    this.createdAt,
+  });
+
+  final String id;
+  final String localityId;
+  final String businessName;
+  final String imageUrl;
+  final String actionType;
+  final String actionTarget;
+  final DateTime? startDate;
+  final DateTime? endDate;
+  final bool isPaid;
+  final bool isActive;
+  final int clicksCount;
+  final DateTime? createdAt;
+
+  bool get isWhatsAppAction => actionType.toLowerCase() == 'whatsapp';
+
+  bool isCurrentlyRunning([DateTime? now]) {
+    if (!isActive || !isPaid) return false;
+    final ref = (now ?? DateTime.now()).toLocal();
+    final today = DateTime(ref.year, ref.month, ref.day);
+    if (startDate != null) {
+      final startLocal = startDate!.toLocal();
+      final startDay = DateTime(startLocal.year, startLocal.month, startLocal.day);
+      if (today.isBefore(startDay)) return false;
+    }
+    if (endDate != null) {
+      final endLocal = endDate!.toLocal();
+      final endDay = DateTime(endLocal.year, endLocal.month, endLocal.day);
+      if (today.isAfter(endDay)) return false;
+    }
+    return true;
+  }
+
+  factory AdBanner.fromJson(Map<String, dynamic> json) {
+    return AdBanner(
+      id: json['id'] as String,
+      localityId: (json['locality_id'] as String?) ?? '',
+      businessName: (json['business_name'] as String?) ?? 'Comercio local',
+      imageUrl: (json['image_url'] as String?) ?? '',
+      actionType: (json['action_type'] as String?) ?? 'web',
+      actionTarget: (json['action_target'] as String?) ?? '',
+      startDate: _parseDate(json['start_date']),
+      endDate: _parseDate(json['end_date']),
+      isPaid: (json['is_paid'] as bool?) ?? false,
+      isActive: (json['is_active'] as bool?) ?? false,
+      clicksCount: (json['clicks_count'] as num?)?.toInt() ?? 0,
+      createdAt: _parseDate(json['created_at']),
+    );
+  }
+
+  Map<String, dynamic> toCacheJson() => <String, dynamic>{
+    'id': id,
+    'locality_id': localityId,
+    'business_name': businessName,
+    'image_url': imageUrl,
+    'action_type': actionType,
+    'action_target': actionTarget,
+    'start_date': startDate?.toIso8601String(),
+    'end_date': endDate?.toIso8601String(),
+    'is_paid': isPaid,
+    'is_active': isActive,
+    'clicks_count': clicksCount,
+    'created_at': createdAt?.toIso8601String(),
+  };
+
+  AdBanner copyWith({int? clicksCount}) {
+    return AdBanner(
+      id: id,
+      localityId: localityId,
+      businessName: businessName,
+      imageUrl: imageUrl,
+      actionType: actionType,
+      actionTarget: actionTarget,
+      startDate: startDate,
+      endDate: endDate,
+      isPaid: isPaid,
+      isActive: isActive,
+      clicksCount: clicksCount ?? this.clicksCount,
+      createdAt: createdAt,
+    );
+  }
+}
+
+/// Conductor marcado como favorito por un pasajero Premium para recibir sus pedidos +10 s antes.
+class FavoriteDriverEntry {
+  const FavoriteDriverEntry({
+    required this.driverId,
+    required this.fullName,
+    this.vehicleLabel,
+    this.plateNumber,
+    this.companyName,
+    this.avatarUrl,
+    this.addedAt,
+  });
+
+  final String driverId;
+  final String fullName;
+  final String? vehicleLabel;
+  final String? plateNumber;
+  final String? companyName;
+  final String? avatarUrl;
+  final DateTime? addedAt;
+
+  factory FavoriteDriverEntry.fromJson(Map<String, dynamic> json) {
+    return FavoriteDriverEntry(
+      driverId: (json['driver_id'] as String?) ?? '',
+      fullName: (json['full_name'] as String?) ?? 'Chofer habilitado',
+      vehicleLabel: json['vehicle_label'] as String?,
+      plateNumber: json['plate_number'] as String?,
+      companyName: json['company_name'] as String?,
+      avatarUrl: json['avatar_url'] as String?,
+      addedAt: _parseDate(json['added_at']),
+    );
+  }
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'driver_id': driverId,
+    'full_name': fullName,
+    'vehicle_label': vehicleLabel,
+    'plate_number': plateNumber,
+    'company_name': companyName,
+    'avatar_url': avatarUrl,
+    'added_at': (addedAt ?? DateTime.now().toUtc()).toIso8601String(),
+  };
+}
+
+/// Zona o punto con mayor concentración de pedidos en la localidad.
+class DriverDemandZoneStat {
+  const DriverDemandZoneStat({
+    required this.label,
+    required this.tripCount,
+    required this.shareRatio,
+    this.center,
+    this.lastTripAt,
+  });
+
+  final String label;
+  final int tripCount;
+  final double shareRatio;
+  final GeoPoint? center;
+  final DateTime? lastTripAt;
+}
+
+/// Franja horaria con mayor cantidad de viajes solicitados.
+class DriverHeatHourBucket {
+  const DriverHeatHourBucket({
+    required this.startHour,
+    required this.label,
+    required this.tripCount,
+  });
+
+  final int startHour;
+  final String label;
+  final int tripCount;
+}
+
+/// Resumen analítico de zonas calientes y horarios pico para Conductores Premium / Diamante / Obsidiana.
+class DriverHeatAnalytics {
+  const DriverHeatAnalytics({
+    required this.totalAnalyzedTrips,
+    required this.topZones,
+    required this.peakHours,
+    required this.generatedAt,
+  });
+
+  final int totalAnalyzedTrips;
+  final List<DriverDemandZoneStat> topZones;
+  final List<DriverHeatHourBucket> peakHours;
+  final DateTime generatedAt;
+
+  factory DriverHeatAnalytics.fromTrips({
+    required List<Trip> trips,
+    required List<Landmark> landmarks,
+    DateTime? now,
+  }) {
+    final validTrips = trips
+        .where((Trip t) => t.status != TripStatus.cancelled)
+        .toList();
+
+    final zoneCounts = <String, int>{};
+    final zoneCenter = <String, GeoPoint?>{};
+    final zoneLatest = <String, DateTime?>{};
+    final hourBuckets = <int, int>{0: 0, 4: 0, 8: 0, 12: 0, 16: 0, 20: 0};
+
+    for (final trip in validTrips) {
+      var label = 'Zona céntrica';
+      GeoPoint? center = trip.originPoint;
+
+      if (trip.originPoint != null && landmarks.isNotEmpty) {
+        Landmark? nearest;
+        var minDist = double.infinity;
+        for (final lm in landmarks) {
+          final lmLoc = lm.location;
+          if (lmLoc == null) continue;
+          final dist = haversineDistanceMeters(
+            trip.originPoint!.lat,
+            trip.originPoint!.lng,
+            lmLoc.lat,
+            lmLoc.lng,
+          );
+          if (dist < minDist) {
+            minDist = dist;
+            nearest = lm;
+          }
+        }
+        if (nearest != null && minDist <= 1400) {
+          label = nearest.name;
+          center = nearest.location;
+        }
+      }
+
+      if (label == 'Zona céntrica' &&
+          trip.originAddress != null &&
+          trip.originAddress!.trim().isNotEmpty) {
+        final rawAddress = trip.originAddress!.trim();
+        final commaIdx = rawAddress.indexOf(',');
+        label = commaIdx > 2 ? rawAddress.substring(0, commaIdx).trim() : rawAddress;
+      }
+
+      zoneCounts[label] = (zoneCounts[label] ?? 0) + 1;
+      zoneCenter[label] ??= center;
+      final tripTs = (trip.createdAt ?? trip.acceptedAt)?.toLocal();
+      if (tripTs != null) {
+        final currentLatest = zoneLatest[label];
+        if (currentLatest == null || tripTs.isAfter(currentLatest)) {
+          zoneLatest[label] = tripTs;
+        }
+        final bucketHour = (tripTs.hour ~/ 4) * 4;
+        hourBuckets[bucketHour] = (hourBuckets[bucketHour] ?? 0) + 1;
+      }
+    }
+
+    final totalCount = validTrips.isEmpty ? 1 : validTrips.length;
+    final sortedZones = zoneCounts.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    final topZones = sortedZones.take(8).map((entry) {
+      return DriverDemandZoneStat(
+        label: entry.key,
+        tripCount: entry.value,
+        shareRatio: (entry.value / totalCount).clamp(0.0, 1.0),
+        center: zoneCenter[entry.key],
+        lastTripAt: zoneLatest[entry.key],
+      );
+    }).toList();
+
+    const slotLabels = <int, String>{
+      0: '00:00 a 04:00',
+      4: '04:00 a 08:00',
+      8: '08:00 a 12:00',
+      12: '12:00 a 16:00',
+      16: '16:00 a 20:00',
+      20: '20:00 a 00:00',
+    };
+
+    final peakHours = hourBuckets.entries.map((entry) {
+      return DriverHeatHourBucket(
+        startHour: entry.key,
+        label: slotLabels[entry.key] ?? '${entry.key}:00',
+        tripCount: entry.value,
+      );
+    }).toList()
+      ..sort((a, b) => b.tripCount.compareTo(a.tripCount));
+
+    return DriverHeatAnalytics(
+      totalAnalyzedTrips: validTrips.length,
+      topZones: topZones,
+      peakHours: peakHours,
+      generatedAt: now ?? DateTime.now(),
+    );
   }
 }

@@ -90,6 +90,11 @@ class _PassengerHomeScreenState extends ConsumerState<PassengerHomeScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(
+      ref.read(subscriptionServiceProvider).ensureInitialized(
+        userId: widget.profile.id,
+      ),
+    );
     _interpolationTimer = Timer.periodic(
       const Duration(milliseconds: 60),
       (_) => _tickAnimations(),
@@ -706,7 +711,8 @@ class _PassengerHomeScreenState extends ConsumerState<PassengerHomeScreen> {
       final isRecent =
           completedAt == null ||
           DateTime.now().difference(completedAt).inMinutes < 45;
-      final driverSummaryName = _assignedDriverSummary?.displayName;
+      final completedSummary = _assignedDriverSummary;
+      final driverSummaryName = completedSummary?.displayName;
       if (mounted) {
         setState(() {
           _assignedDriverSummary = null;
@@ -722,7 +728,12 @@ class _PassengerHomeScreenState extends ConsumerState<PassengerHomeScreen> {
               context: context,
               repo: repo,
               trip: next,
+              passengerProfile: widget.profile,
+              driverSummary: completedSummary,
               driverName: driverSummaryName,
+              onFavoritesChanged: () {
+                ref.invalidate(favoriteDriversProvider(widget.profile.id));
+              },
             );
           }
         } catch (_) {}
@@ -747,6 +758,46 @@ class _PassengerHomeScreenState extends ConsumerState<PassengerHomeScreen> {
   }
 
   Future<void> _pickScheduledDateTime() async {
+    if (!widget.profile.isPremium) {
+      final scheduledCount = await ref
+          .read(taxiyaRepositoryProvider)
+          .countActiveScheduledTrips(widget.profile.id);
+      if (!mounted) return;
+      if (scheduledCount >= 1) {
+        await showDialog<void>(
+          context: context,
+          builder: (BuildContext ctx) {
+            return AlertDialog(
+              title: const Text('Reservas ilimitadas con Premium'),
+              content: const Text(
+                r'En el Plan Gratuito podés tener 1 viaje programado activo por vez. Con Plan Premium ($ 3 USD/mes) agendás todos tus viajes programados sin límites.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Cerrar'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.of(ctx).pop();
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const TaxiyaPlansScreen(
+                          role: TaxiyaRole.passenger,
+                        ),
+                      ),
+                    );
+                  },
+                  child: const Text('Ver Plan Premium'),
+                ),
+              ],
+            );
+          },
+        );
+        return;
+      }
+    }
+
     final now = DateTime.now();
     final date = await showDatePicker(
       context: context,
@@ -854,7 +905,13 @@ class _PassengerHomeScreenState extends ConsumerState<PassengerHomeScreen> {
 
     setState(() => _submittingTrip = true);
     try {
-      await ref.read(taxiyaRepositoryProvider).createTrip(
+      final repo = ref.read(taxiyaRepositoryProvider);
+      var preferredIds = const <String>[];
+      if (widget.profile.isPremium) {
+        final favs = await repo.fetchFavoriteDrivers(widget.profile.id);
+        preferredIds = favs.map((e) => e.driverId).toList();
+      }
+      await repo.createTrip(
         passengerId: widget.profile.id,
         localityId: localityId,
         originAddress: originAddress ?? 'Mi ubicación actual',
@@ -866,6 +923,7 @@ class _PassengerHomeScreenState extends ConsumerState<PassengerHomeScreen> {
             ? (repeatTemplate?.waitMinutes ?? _waitMinutes)
             : null,
         scheduledFor: repeatTemplate == null ? _scheduledFor : null,
+        preferredDriverIds: preferredIds,
       );
       if (mounted) {
         setState(() => _scheduledFor = null);
@@ -1093,6 +1151,15 @@ class _PassengerHomeScreenState extends ConsumerState<PassengerHomeScreen> {
     final hasActiveTrip = activeTrip != null && !activeTrip.status.isTerminal;
     final lastCompletedTrip = ref.watch(lastCompletedTripProvider).value;
     final pendingReturnBase = ref.watch(pendingReturnTripProvider);
+    final favoriteDrivers = widget.profile.isPremium
+        ? (ref.watch(favoriteDriversProvider(widget.profile.id)).value ??
+            const <FavoriteDriverEntry>[])
+        : const <FavoriteDriverEntry>[];
+    final isAssignedDriverFavorite =
+        _assignedDriverSummary != null &&
+        favoriteDrivers.any(
+          (e) => e.driverId == _assignedDriverSummary!.driverId,
+        );
     final locality = _currentLocality();
     final center = locality?.center ?? CatamarcaDefaults.belen;
     final colors = context.taxiyaColors;
@@ -1101,8 +1168,124 @@ class _PassengerHomeScreenState extends ConsumerState<PassengerHomeScreen> {
     final isNightShift = TaxiyaDateUtils.isNightShift();
 
     return Scaffold(
+      drawer: Drawer(
+        child: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+                child: Row(
+                  children: [
+                    TaxiyaAvatar(
+                      avatarUrl: widget.profile.avatarUrl,
+                      fullName: widget.profile.fullName,
+                      radius: 24,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            widget.profile.fullName ?? 'Pasajero TaxiYa',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 15.5,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            widget.profile.subscriptionTier.shortTitleAr,
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              color: widget.profile.isPremium
+                                  ? scheme.primary
+                                  : colors.textSecondary,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.workspace_premium_outlined),
+                title: const Text('Planes y Suscripciones'),
+                subtitle: Text(widget.profile.subscriptionTier.priceLabelAr),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) =>
+                          const TaxiyaPlansScreen(role: TaxiyaRole.passenger),
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.star_outline_rounded),
+                title: const Text('Mis Taxistas Favoritos'),
+                subtitle: Text(
+                  widget.profile.isPremium
+                      ? '${favoriteDrivers.length} choferes con prioridad +10 s'
+                      : 'Beneficio Plan Premium',
+                ),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  showPassengerFavoriteDriversSheet(
+                    context: context,
+                    passengerProfile: widget.profile,
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.help_outline_rounded),
+                title: const Text('Ayuda y guía de uso'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  openPassengerHelpScreen(
+                    context: context,
+                    profile: widget.profile,
+                    localityName: locality?.name ?? 'Catamarca',
+                    activeTripId: hasActiveTrip ? activeTrip.id : null,
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.settings_outlined),
+                title: const Text('Configuración'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const PassengerSettingsScreen(),
+                    ),
+                  );
+                },
+              ),
+              const Spacer(),
+              if (widget.profile.showsAds)
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: TaxiyaAdBannerWidget(
+                    localityId: locality?.id ?? widget.profile.localityId ?? '',
+                    subscriptionTier: widget.profile.subscriptionTier,
+                    role: TaxiyaRole.passenger,
+                    compact: true,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
       appBar: AppBar(
-        titleSpacing: 16,
+        titleSpacing: 0,
         title: Row(
           children: [
             TaxiyaAvatar(
@@ -1358,6 +1541,51 @@ class _PassengerHomeScreenState extends ConsumerState<PassengerHomeScreen> {
                       PassengerActiveTripCard(
                         trip: activeTrip,
                         driverSummary: _assignedDriverSummary,
+                        isFavoriteDriver: isAssignedDriverFavorite,
+                        onToggleFavoriteDriver:
+                            _assignedDriverSummary == null
+                            ? null
+                            : () async {
+                                if (!widget.profile.isPremium) {
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute<void>(
+                                      builder: (_) => const TaxiyaPlansScreen(
+                                        role: TaxiyaRole.passenger,
+                                      ),
+                                    ),
+                                  );
+                                  return;
+                                }
+                                final summary = _assignedDriverSummary!;
+                                final added = await ref
+                                    .read(taxiyaRepositoryProvider)
+                                    .toggleFavoriteDriver(
+                                      passengerId: widget.profile.id,
+                                      driver: FavoriteDriverEntry(
+                                        driverId: summary.driverId,
+                                        fullName: summary.displayName,
+                                        vehicleLabel:
+                                            summary.vehicleDescription,
+                                        plateNumber: summary.visiblePlateLabel,
+                                        companyName: summary.companyName,
+                                        avatarUrl: summary.avatarUrl,
+                                      ),
+                                    );
+                                ref.invalidate(
+                                  favoriteDriversProvider(widget.profile.id),
+                                );
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        added
+                                            ? '${summary.displayName} quedó en Taxistas Favoritos.'
+                                            : 'Quitaste a ${summary.displayName} de favoritos.',
+                                      ),
+                                    ),
+                                  );
+                                }
+                              },
                         onOpenChat: () {
                           showTaxiyaTripChatSheet(
                             context: context,
@@ -1414,55 +1642,153 @@ class _PassengerHomeScreenState extends ConsumerState<PassengerHomeScreen> {
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
                               if (lastCompletedTrip != null) ...[
-                                InkWell(
-                                  borderRadius: BorderRadius.circular(10),
-                                  onTap: _submittingTrip
-                                      ? null
-                                      : () => _requestTrip(
-                                            repeatTemplate: lastCompletedTrip,
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(10),
+                                        onTap: _submittingTrip
+                                            ? null
+                                            : () => _requestTrip(
+                                                  repeatTemplate:
+                                                      lastCompletedTrip,
+                                                ),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                            vertical: 9,
                                           ),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 9,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: scheme.primary.withValues(
-                                        alpha: 0.12,
-                                      ),
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: scheme.primary.withValues(
-                                          alpha: 0.35,
-                                        ),
-                                      ),
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        Icon(
-                                          Icons.history_rounded,
-                                          size: 18,
-                                          color: scheme.primary,
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Expanded(
-                                          child: Text(
-                                            'Repetir último viaje: ${lastCompletedTrip.originAddress ?? 'Origen'} → ${lastCompletedTrip.destAddress ?? 'Destino'}',
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              fontSize: 12.5,
-                                              fontWeight: FontWeight.w700,
+                                          decoration: BoxDecoration(
+                                            color: scheme.primary.withValues(
+                                              alpha: 0.12,
+                                            ),
+                                            borderRadius: BorderRadius.circular(
+                                              10,
+                                            ),
+                                            border: Border.all(
+                                              color: scheme.primary.withValues(
+                                                alpha: 0.35,
+                                              ),
                                             ),
                                           ),
+                                          child: Row(
+                                            children: [
+                                              Icon(
+                                                Icons.history_rounded,
+                                                size: 18,
+                                                color: scheme.primary,
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  'Repetir último viaje: ${lastCompletedTrip.originAddress ?? 'Origen'} → ${lastCompletedTrip.destAddress ?? 'Destino'}',
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: const TextStyle(
+                                                    fontSize: 12.5,
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
+                                                ),
+                                              ),
+                                              const Icon(
+                                                Icons.play_arrow_rounded,
+                                                size: 20,
+                                              ),
+                                            ],
+                                          ),
                                         ),
-                                        const Icon(
-                                          Icons.play_arrow_rounded,
-                                          size: 20,
-                                        ),
-                                      ],
+                                      ),
                                     ),
-                                  ),
+                                    if (lastCompletedTrip.driverId != null) ...[
+                                      const SizedBox(width: 6),
+                                      Builder(
+                                        builder: (BuildContext context) {
+                                          final lastDriverId =
+                                              lastCompletedTrip.driverId!;
+                                          final isFav = favoriteDrivers.any(
+                                            (e) => e.driverId == lastDriverId,
+                                          );
+                                          return IconButton.outlined(
+                                            tooltip: isFav
+                                                ? 'En Taxistas Favoritos'
+                                                : 'Marcar último chofer como favorito',
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            onPressed: () async {
+                                              if (!widget.profile.isPremium) {
+                                                Navigator.of(context).push(
+                                                  MaterialPageRoute<void>(
+                                                    builder: (_) =>
+                                                        const TaxiyaPlansScreen(
+                                                          role: TaxiyaRole
+                                                              .passenger,
+                                                        ),
+                                                  ),
+                                                );
+                                                return;
+                                              }
+                                              final summary = await ref
+                                                  .read(
+                                                    taxiyaRepositoryProvider,
+                                                  )
+                                                  .fetchDriverAssignedSummary(
+                                                    lastDriverId,
+                                                  );
+                                              final added = await ref
+                                                  .read(
+                                                    taxiyaRepositoryProvider,
+                                                  )
+                                                  .toggleFavoriteDriver(
+                                                    passengerId:
+                                                        widget.profile.id,
+                                                    driver: FavoriteDriverEntry(
+                                                      driverId: lastDriverId,
+                                                      fullName:
+                                                          summary?.displayName ??
+                                                          'Chofer TaxiYa',
+                                                      vehicleLabel: summary
+                                                          ?.vehicleDescription,
+                                                      plateNumber: summary
+                                                          ?.visiblePlateLabel,
+                                                      companyName:
+                                                          summary?.companyName,
+                                                      avatarUrl:
+                                                          summary?.avatarUrl,
+                                                    ),
+                                                  );
+                                              ref.invalidate(
+                                                favoriteDriversProvider(
+                                                  widget.profile.id,
+                                                ),
+                                              );
+                                              if (context.mounted) {
+                                                ScaffoldMessenger.of(
+                                                  context,
+                                                ).showSnackBar(
+                                                  SnackBar(
+                                                    content: Text(
+                                                      added
+                                                          ? 'Chofer guardado en Taxistas Favoritos (+10 s).'
+                                                          : 'Chofer quitado de favoritos.',
+                                                    ),
+                                                  ),
+                                                );
+                                              }
+                                            },
+                                            icon: Icon(
+                                              isFav
+                                                  ? Icons.star_rounded
+                                                  : Icons.star_outline_rounded,
+                                              color: isFav
+                                                  ? scheme.primary
+                                                  : colors.textSecondary,
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ],
+                                  ],
                                 ),
                                 const SizedBox(height: 10),
                               ],
@@ -1595,6 +1921,17 @@ class _PassengerHomeScreenState extends ConsumerState<PassengerHomeScreen> {
                           ),
                         ),
                       ),
+                    if (widget.profile.showsAds &&
+                        (!hasActiveTrip || activeTrip.status.isSearching)) ...[
+                      const SizedBox(height: 8),
+                      TaxiyaAdBannerWidget(
+                        localityId:
+                            locality?.id ?? widget.profile.localityId ?? '',
+                        subscriptionTier: widget.profile.subscriptionTier,
+                        role: TaxiyaRole.passenger,
+                        compact: hasActiveTrip,
+                      ),
+                    ],
                   ],
                 ),
               ),

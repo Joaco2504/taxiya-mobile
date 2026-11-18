@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
@@ -8,6 +10,7 @@ import 'src/passenger_app.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeTaxiyaCore();
+  unawaited(TaxiyaAdRuntime.ensureInitialized());
   if (TaxiyaEnv.mapboxAccessToken.isNotEmpty) {
     MapboxOptions.setAccessToken(TaxiyaEnv.mapboxAccessToken);
   }

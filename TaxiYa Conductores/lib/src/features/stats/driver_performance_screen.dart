@@ -141,22 +141,45 @@ class _DriverPerformanceScreenState
     final topZones = zoneCounts.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Tu rendimiento e insignias'),
-        actions: [
-          IconButton(
-            tooltip: 'Actualizar métricas',
-            onPressed: _loadData,
-            icon: const Icon(Icons.refresh_rounded),
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Tu rendimiento y zonas'),
+          actions: [
+            IconButton(
+              tooltip: 'Actualizar métricas',
+              onPressed: () {
+                _loadData();
+                if (widget.profile.localityId != null) {
+                  ref.invalidate(
+                    localityHeatAnalyticsProvider(widget.profile.localityId!),
+                  );
+                }
+              },
+              icon: const Icon(Icons.refresh_rounded),
+            ),
+          ],
+          bottom: const TabBar(
+            tabs: [
+              Tab(
+                icon: Icon(Icons.emoji_events_outlined, size: 18),
+                text: 'Insignias y metas',
+              ),
+              Tab(
+                icon: Icon(Icons.local_fire_department_outlined, size: 18),
+                text: 'Mapa de calor y zonas',
+              ),
+            ],
           ),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
+        ),
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : TabBarView(
+                children: [
+                  ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
                 SegmentedButton<StatsPeriod>(
                   segments: StatsPeriod.values
                       .map(
@@ -322,6 +345,295 @@ class _DriverPerformanceScreenState
                 }),
               ],
             ),
+                  _DriverHeatZonesTab(
+                    localityId: widget.profile.localityId ?? '',
+                    unlocked:
+                        widget.profile.isPremium ||
+                        effectiveHighest.grantsPremiumZoneStatsFor15Days,
+                    isPremiumSubscriber: widget.profile.isPremium,
+                    highestLevel: effectiveHighest,
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
+class _DriverHeatZonesTab extends ConsumerWidget {
+  const _DriverHeatZonesTab({
+    required this.localityId,
+    required this.unlocked,
+    required this.isPremiumSubscriber,
+    required this.highestLevel,
+  });
+
+  final String localityId;
+  final bool unlocked;
+  final bool isPremiumSubscriber;
+  final BadgeLevel highestLevel;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = context.taxiyaColors;
+    final scheme = Theme.of(context).colorScheme;
+
+    if (!unlocked) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: scheme.primary.withValues(alpha: 0.14),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      Icons.local_fire_department_rounded,
+                      size: 36,
+                      color: scheme.primary,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    'Mapa de calor y horarios pico',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    r'Descubrí en qué barrios, plazas y horarios hay más pedidos en tu localidad. Se desbloquea con Plan Premium ($ 3 USD/mes) o alcanzando Nivel 5 Diamante.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13.5, color: colors.textSecondary),
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton.icon(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) =>
+                              const TaxiyaPlansScreen(role: TaxiyaRole.driver),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.workspace_premium_rounded),
+                    label: const Text('Desbloquear con Plan Premium'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (localityId.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'Asigná tu localidad en Configuración para ver las zonas con más viajes.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: colors.textSecondary),
+          ),
+        ),
+      );
+    }
+
+    final analyticsAsync = ref.watch(localityHeatAnalyticsProvider(localityId));
+
+    return analyticsAsync.when(
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (_, _) => Center(
+        child: Text(
+          'No pudimos cargar el mapa de demanda en este momento.',
+          style: TextStyle(color: colors.textSecondary),
+        ),
+      ),
+      data: (DriverHeatAnalytics analytics) {
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Card(
+              margin: EdgeInsets.zero,
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.local_fire_department_rounded,
+                      color: scheme.primary,
+                      size: 26,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            isPremiumSubscriber
+                                ? 'Mapa de calor · Plan Premium activo'
+                                : 'Mapa de calor · Nivel ${highestLevel.labelAr} (15 días)',
+                            style: const TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Basado en ${analytics.totalAnalyzedTrips} pedidos recientes en tu localidad.',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              color: colors.textSecondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Zonas con mayor demanda',
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            if (analytics.topZones.isEmpty)
+              Card(
+                margin: EdgeInsets.zero,
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Text(
+                    'Todavía hay pocos viajes históricos registrados en esta localidad para armar el ranking de zonas.',
+                    style: TextStyle(color: colors.textSecondary),
+                  ),
+                ),
+              )
+            else
+              ...analytics.topZones.map((DriverDemandZoneStat zone) {
+                final pct = (zone.shareRatio * 100).round();
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                zone.label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              '${zone.tripCount} pedidos · $pct%',
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700,
+                                color: scheme.primary,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: LinearProgressIndicator(
+                            minHeight: 8,
+                            value: zone.shareRatio.clamp(0.05, 1.0),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }),
+            const SizedBox(height: 16),
+            Text(
+              'Horarios pico locales',
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              margin: EdgeInsets.zero,
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  children: analytics.peakHours.map((DriverHeatHourBucket slot) {
+                    final maxSlot = analytics.peakHours.isEmpty
+                        ? 1
+                        : analytics.peakHours
+                              .map((e) => e.tripCount)
+                              .reduce((a, b) => a > b ? a : b);
+                    final ratio = maxSlot <= 0
+                        ? 0.0
+                        : (slot.tripCount / maxSlot).clamp(0.0, 1.0);
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 112,
+                            child: Text(
+                              slot.label,
+                              style: const TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(6),
+                              child: LinearProgressIndicator(
+                                minHeight: 8,
+                                value: ratio,
+                                color: scheme.secondary,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          SizedBox(
+                            width: 48,
+                            child: Text(
+                              '${slot.tripCount} viajes',
+                              textAlign: TextAlign.right,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: colors.textSecondary,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

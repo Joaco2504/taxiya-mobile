@@ -21,6 +21,30 @@ abstract final class TaxiyaEnv {
     'TAXIYA_SUPPORT_WHATSAPP',
     defaultValue: '',
   );
+  static const String revenueCatAndroidApiKey = String.fromEnvironment(
+    'REVENUECAT_ANDROID_API_KEY',
+    defaultValue: '',
+  );
+  static const String revenueCatIosApiKey = String.fromEnvironment(
+    'REVENUECAT_IOS_API_KEY',
+    defaultValue: '',
+  );
+  static const String adMobBannerUnitId = String.fromEnvironment(
+    'ADMOB_BANNER_UNIT_ID',
+    defaultValue: '',
+  );
+
+  // Identificadores fijos de planes mensuales en RevenueCat / Google Play Billing
+  static const String productNoAdsMonthly = 'taxiya_no_ads_monthly';
+  static const String productPremiumMonthly = 'taxiya_premium_monthly';
+  static const String entitlementNoAds = 'no_ads';
+  static const String entitlementPremium = 'premium';
+
+  // IDs oficiales de prueba de Google AdMob mientras se configura la unidad productiva
+  static const String defaultAndroidTestBannerUnitId =
+      'ca-app-pub-3940256099942544/6300978111';
+  static const String defaultIosTestBannerUnitId =
+      'ca-app-pub-3940256099942544/2934735716';
 
   static const String schema = 'taxiya';
   static const String bucketPublic = 'taxiya_public';

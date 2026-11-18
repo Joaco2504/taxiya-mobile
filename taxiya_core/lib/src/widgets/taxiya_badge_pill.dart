@@ -39,23 +39,36 @@ class TaxiyaBadgeArtwork extends StatelessWidget {
     final materialColor = Color(targetLevel.colorHex);
     final assetPath = badgeCode.assetPath(targetLevel);
 
+    final rawImage = Image.asset(
+      assetPath,
+      width: size,
+      height: size,
+      fit: BoxFit.contain,
+      filterQuality: FilterQuality.high,
+      errorBuilder: (_, _, _) => _VectorMedalFallback(
+        color: materialColor,
+        icon: _categoryIcon,
+        levelNumber: targetLevel.level,
+        size: size,
+      ),
+    );
+
     final badgeBody = SizedBox(
       width: size,
       height: size,
       child: Opacity(
-        opacity: locked ? 0.42 : 1.0,
-        child: Image.asset(
-          assetPath,
-          width: size,
-          height: size,
-          fit: BoxFit.contain,
-          errorBuilder: (_, _, _) => _VectorMedalFallback(
-            color: materialColor,
-            icon: _categoryIcon,
-            levelNumber: targetLevel.level,
-            size: size,
-          ),
-        ),
+        opacity: locked ? 0.45 : 1.0,
+        child: locked
+            ? ColorFiltered(
+                colorFilter: const ColorFilter.matrix(<double>[
+                  0.2126, 0.7152, 0.0722, 0, 0,
+                  0.2126, 0.7152, 0.0722, 0, 0,
+                  0.2126, 0.7152, 0.0722, 0, 0,
+                  0, 0, 0, 1, 0,
+                ]),
+                child: rawImage,
+              )
+            : rawImage,
       ),
     );
 
@@ -74,12 +87,12 @@ class TaxiyaBadgeArtwork extends StatelessWidget {
               color: Theme.of(context).colorScheme.surface,
               shape: BoxShape.circle,
               border: Border.all(
-                color: materialColor.withValues(alpha: 0.7),
+                color: materialColor.withValues(alpha: 0.75),
                 width: 1,
               ),
             ),
             child: Icon(
-              Icons.lock_outline_rounded,
+              Icons.lock_rounded,
               size: size * 0.28,
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),

@@ -371,4 +371,87 @@ class HiveCacheService {
       return <String, int>{};
     }
   }
+
+  // ---- Publicidad local, Suscripciones y Beneficios Premium ----
+
+  Future<void> saveAdBanners(String localityId, List<AdBanner> items) async {
+    final encoded = jsonEncode(items.map((e) => e.toCacheJson()).toList());
+    await _coreBox.put('ad_banners_$localityId', encoded);
+  }
+
+  List<AdBanner> loadAdBanners(String localityId) {
+    final raw = _coreBox.get('ad_banners_$localityId') as String?;
+    if (raw == null || raw.isEmpty) return const <AdBanner>[];
+    try {
+      final decoded = jsonDecode(raw) as List<dynamic>;
+      return decoded
+          .map((e) => AdBanner.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList();
+    } catch (_) {
+      return const <AdBanner>[];
+    }
+  }
+
+  Future<void> saveFavoriteDrivers(
+    String passengerId,
+    List<FavoriteDriverEntry> items,
+  ) async {
+    final encoded = jsonEncode(items.map((e) => e.toJson()).toList());
+    await _coreBox.put('favorite_drivers_$passengerId', encoded);
+  }
+
+  List<FavoriteDriverEntry> loadFavoriteDrivers(String passengerId) {
+    final raw = _coreBox.get('favorite_drivers_$passengerId') as String?;
+    if (raw == null || raw.isEmpty) return const <FavoriteDriverEntry>[];
+    try {
+      final decoded = jsonDecode(raw) as List<dynamic>;
+      return decoded
+          .map(
+            (e) => FavoriteDriverEntry.fromJson(
+              Map<String, dynamic>.from(e as Map),
+            ),
+          )
+          .toList();
+    } catch (_) {
+      return const <FavoriteDriverEntry>[];
+    }
+  }
+
+  String get driverOrderSoundPreset =>
+      (_settingsBox.get('driver_order_sound_preset') as String?) ?? 'classic';
+
+  Future<void> setDriverOrderSoundPreset(String presetCode) =>
+      _settingsBox.put('driver_order_sound_preset', presetCode);
+
+  Future<void> saveSubscriptionOverride(
+    String userId,
+    SubscriptionTier tier,
+    DateTime? expiresAt,
+  ) async {
+    await _coreBox.put(
+      'subscription_override_$userId',
+      jsonEncode(<String, dynamic>{
+        'tier': tier.dbValue,
+        'expires_at': expiresAt?.toIso8601String(),
+      }),
+    );
+  }
+
+  SubscriptionTier? loadSubscriptionOverride(String userId) {
+    final raw = _coreBox.get('subscription_override_$userId') as String?;
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      final expRaw = map['expires_at'] as String?;
+      if (expRaw != null && expRaw.isNotEmpty) {
+        final exp = DateTime.tryParse(expRaw);
+        if (exp != null && exp.isBefore(DateTime.now())) {
+          return SubscriptionTier.free;
+        }
+      }
+      return SubscriptionTier.fromString(map['tier'] as String?);
+    } catch (_) {
+      return null;
+    }
+  }
 }

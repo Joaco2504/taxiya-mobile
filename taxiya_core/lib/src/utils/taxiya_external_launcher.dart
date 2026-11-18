@@ -81,4 +81,39 @@ abstract final class TaxiyaExternalLauncher {
     final uri = buildWhatsAppUri(message: lines.join('\n'));
     return launchUrl(uri, mode: LaunchMode.externalApplication);
   }
+
+  /// Abre el enlace objetivo de un banner local (WhatsApp directo o sitio web externo).
+  static Future<bool> openAdBannerTarget({
+    required String actionType,
+    required String actionTarget,
+    String? businessName,
+  }) async {
+    final target = actionTarget.trim();
+    if (target.isEmpty) return false;
+
+    if (actionType.toLowerCase() == 'whatsapp') {
+      final lower = target.toLowerCase();
+      if (lower.startsWith('http://') || lower.startsWith('https://')) {
+        final uri = Uri.tryParse(target);
+        if (uri != null) {
+          return launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      }
+      final uri = buildWhatsAppUri(
+        phoneDigits: target,
+        message: businessName != null && businessName.trim().isNotEmpty
+            ? 'Hola ${businessName.trim()}, vi su aviso en TaxiYa y quería consultar.'
+            : 'Hola, vi su aviso en TaxiYa y quería consultar.',
+      );
+      return launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+
+    final normalized =
+        target.startsWith('http://') || target.startsWith('https://')
+            ? target
+            : 'https://$target';
+    final uri = Uri.tryParse(normalized);
+    if (uri == null) return false;
+    return launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
 }

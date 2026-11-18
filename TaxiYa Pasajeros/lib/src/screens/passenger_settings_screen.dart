@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:taxiya_core/taxiya_core.dart';
 
 import '../features/support/passenger_help_screen.dart';
+import '../features/trips/passenger_trip_modals.dart';
 import '../services/passenger_image_helper.dart';
 
 /// Configuración del pasajero: nombre, correo, selfie o 12 avatares, localidad, tema y avisos.
@@ -342,6 +343,62 @@ class _PassengerSettingsScreenState
             ),
             const SizedBox(height: 14),
             Card(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ListTile(
+                    leading: Icon(
+                      profile.isPremium
+                          ? Icons.workspace_premium_rounded
+                          : Icons.verified_user_outlined,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    title: const Text(
+                      'Planes y Suscripciones',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: Text(
+                      profile.subscriptionTier.labelAr,
+                      style: TextStyle(color: colors.textSecondary),
+                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const TaxiyaPlansScreen(
+                            role: TaxiyaRole.passenger,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: Icon(
+                      Icons.star_rounded,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    title: const Text(
+                      'Mis Taxistas Favoritos',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: Text(
+                      profile.isPremium
+                          ? 'Ven tus pedidos 10 segundos antes que el resto'
+                          : 'Beneficio exclusivo del Plan Premium',
+                      style: TextStyle(color: colors.textSecondary),
+                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => showPassengerFavoriteDriversSheet(
+                      context: context,
+                      passengerProfile: profile,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: Column(
@@ -460,6 +517,14 @@ class _PassengerSettingsScreenState
               icon: const Icon(Icons.logout_rounded),
               label: const Text('Cerrar sesión'),
             ),
+            if (profile.showsAds) ...[
+              const SizedBox(height: 14),
+              TaxiyaAdBannerWidget(
+                localityId: profile.localityId ?? '',
+                subscriptionTier: profile.subscriptionTier,
+                role: TaxiyaRole.passenger,
+              ),
+            ],
           ],
         ),
       ),

@@ -47,6 +47,8 @@ dependencies:
   path_provider: ^2.1.6
   audioplayers: ^6.8.1
   url_launcher: ^6.3.3
+  purchases_flutter: ^11.0.4
+  google_mobile_ads: ^9.2.0
 
 dev_dependencies:
   flutter_test:
